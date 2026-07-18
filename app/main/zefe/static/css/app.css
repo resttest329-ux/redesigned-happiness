@@ -48,6 +48,43 @@ h1, h2, h3, h4, h5, h6 {
   opacity: 1;
 }
 
+/* Button-level busy state: dim the label and show inline spinner while the
+   htmx request is in flight. Any element carrying data-zefe-busy will get
+   the treatment. */
+[data-zefe-busy] .zefe-busy-spinner { display: none; }
+[data-zefe-busy].htmx-request,
+.htmx-request [data-zefe-busy] {
+  cursor: progress;
+  opacity: 0.85;
+  pointer-events: none;
+}
+[data-zefe-busy].htmx-request .zefe-busy-label,
+.htmx-request [data-zefe-busy] .zefe-busy-label { opacity: 0.55; }
+[data-zefe-busy].htmx-request .zefe-busy-spinner,
+.htmx-request [data-zefe-busy] .zefe-busy-spinner {
+  display: inline-flex;
+  animation: zefe-spin 700ms linear infinite;
+}
+
+@keyframes zefe-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+/* Full-form overlay used for long-running wizard steps. */
+.zefe-form-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.7);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: inherit;
+  z-index: 5;
+}
+.htmx-request.zefe-form-host .zefe-form-overlay,
+.zefe-form-host.htmx-request .zefe-form-overlay { display: flex; }
+
 @keyframes zefe-fade-in-up {
   from { opacity: 0; transform: translateY(4px); }
   to   { opacity: 1; transform: translateY(0); }

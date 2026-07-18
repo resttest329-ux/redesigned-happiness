@@ -1,17 +1,4 @@
-# Zefe UX Consolidation and Zebe Hardening Improvements
-
-## Phase 1: Zefe shared UI consolidation ✅
-- [x] Consolidate repeated list, modal, and form patterns into reusable shared UI helpers.
-- [x] Apply the shared helpers to customer management while preserving the modal workflow.
-- [x] Keep the existing light slate/indigo visual style, responsive behavior, and HTMX interactions.
-
-## Phase 2: Zebe security and reliability hardening ✅
-- [x] Add stricter max-length validation for customer, profile, session, and invoice log inputs.
-- [x] Add lightweight rate limiting for sensitive authentication and write endpoints.
-- [x] Add structured audit logging for sensitive account, session, customer, and invoice actions.
-- [x] Reduce noisy exception logging for expected invalid-token failures.
-
-## Phase 3: Regression and security verification ✅
-- [x] Compile frontend and backend modules and run static checks.
-- [x] Verify modal/customer contracts and backend CRUD behavior remain intact.
-- [x] Re-run authentication, authorization, IDOR, input-validation, rate-limit, and injection-resilience checks.
+## Items and Invoice UX Plan
+- [x] Add backend item/service persistence, API CRUD, searchable pagination, and streaming CSV/Excel import endpoints while keeping pagination and import validation authoritative in the API.
+- [x] Add the frontend Items/Services page, sidebar navigation, overlays, reusable bulk delete/pagination patterns, import UI, and wire invoice line creation to consume saved items/services through API calls.
+- [x] Add selective confirmation dialogs, visible long-operation loading states, inline signing-secret onboarding, terminology cleanup, and end-to-end regression verification.

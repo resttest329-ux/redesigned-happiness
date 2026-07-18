@@ -651,3 +651,140 @@ async def search_services(
     )
     data = resp.json()
     return data if isinstance(data, list) else []
+
+
+# ---------------------------------------------------------------------------
+# Items & Services catalog
+# ---------------------------------------------------------------------------
+
+
+async def list_items(
+    token: str,
+    session_id: Optional[str] = None,
+    search: Optional[str] = None,
+    kind: Optional[str] = None,
+    offset: int = 0,
+    limit: int = 50,
+) -> dict:
+    params: dict = {"offset": offset, "limit": limit}
+    if search:
+        params["search"] = search
+    if kind in ("product", "service"):
+        params["kind"] = kind
+    resp = await _get("/items", token, session_id=session_id, params=params)
+    return resp.json()
+
+
+async def get_item(
+    token: str, item_id: int, session_id: Optional[str] = None
+) -> dict:
+    resp = await _get(f"/items/{item_id}", token, session_id=session_id)
+    return resp.json()
+
+
+async def create_item(
+    token: str, payload: dict, session_id: Optional[str] = None
+) -> dict:
+    async def _call(tok):
+        _assert_client()
+        try:
+            r = await _client.post(
+                "/items",
+                json=payload,
+                headers={"Authorization": f"Bearer {tok}"},
+            )
+        except httpx.RequestError as e:
+            logging.exception("create_item transport error")
+            raise TransportError(e)
+        _check(r)
+        return r.json()
+
+    return await _exec_with_refresh(_call, token, session_id)
+
+
+async def update_item(
+    token: str,
+    item_id: int,
+    payload: dict,
+    session_id: Optional[str] = None,
+) -> dict:
+    async def _call(tok):
+        _assert_client()
+        try:
+            r = await _client.patch(
+                f"/items/{item_id}",
+                json=payload,
+                headers={"Authorization": f"Bearer {tok}"},
+            )
+        except httpx.RequestError as e:
+            logging.exception("update_item transport error")
+            raise TransportError(e)
+        _check(r)
+        return r.json()
+
+    return await _exec_with_refresh(_call, token, session_id)
+
+
+async def delete_item(
+    token: str, item_id: int, session_id: Optional[str] = None
+) -> None:
+    async def _call(tok):
+        _assert_client()
+        try:
+            r = await _client.delete(
+                f"/items/{item_id}",
+                headers={"Authorization": f"Bearer {tok}"},
+            )
+        except httpx.RequestError as e:
+            logging.exception("delete_item transport error")
+            raise TransportError(e)
+        _check(r)
+
+    return await _exec_with_refresh(_call, token, session_id)
+
+
+async def bulk_delete_items(
+    token: str, ids: list[int], session_id: Optional[str] = None
+) -> dict:
+    async def _call(tok):
+        _assert_client()
+        try:
+            r = await _client.post(
+                "/items/bulk-delete",
+                json={"ids": ids},
+                headers={"Authorization": f"Bearer {tok}"},
+            )
+        except httpx.RequestError as e:
+            logging.exception("bulk_delete_items transport error")
+            raise TransportError(e)
+        _check(r)
+        return r.json()
+
+    return await _exec_with_refresh(_call, token, session_id)
+
+
+async def import_items(
+    token: str,
+    filename: str,
+    content: bytes,
+    content_type: str = "application/octet-stream",
+    session_id: Optional[str] = None,
+) -> dict:
+    async def _call(tok):
+        _assert_client()
+        try:
+            r = await _client.post(
+                "/items/import",
+                files={"file": (filename, content, content_type)},
+                headers={"Authorization": f"Bearer {tok}"},
+                timeout=httpx.Timeout(
+                    connect=15.0, read=120.0, write=60.0, pool=15.0
+                ),
+            )
+        except httpx.RequestError as e:
+            logging.exception("import_items transport error")
+            raise TransportError(e)
+        _check(r)
+        return r.json()
+
+    return await _exec_with_refresh(_call, token, session_id)

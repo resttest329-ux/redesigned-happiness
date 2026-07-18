@@ -1,5 +1,11 @@
 from typing import Optional
-from sqlalchemy import ForeignKey, String, DateTime, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    ForeignKey,
+    String,
+    DateTime,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 from utils import database
 from datetime import datetime, timezone
@@ -100,6 +106,60 @@ class InvoiceLog(Base):
     transmitted: Mapped[bool] = mapped_column(default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+class Item(Base):
+    """Business-scoped catalog item or service.
+
+    Each row must carry EXACTLY ONE FIRS classification: either an HS code
+    (product) or an ISIC code (service), never both and never neither. That
+    invariant is enforced at three layers: Pydantic schema, application
+    service, and a DB-level CHECK constraint.
+    """
+
+    __tablename__ = "items"
+    __table_args__ = (
+        UniqueConstraint("business_id", "sku", name="uq_items_business_sku"),
+        CheckConstraint(
+            "(hsn_code IS NOT NULL AND isic_code IS NULL) OR "
+            "(hsn_code IS NULL AND isic_code IS NOT NULL)",
+            name="ck_items_exactly_one_code",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    business_id: Mapped[str] = mapped_column(String, index=True)
+    sku: Mapped[str] = mapped_column(String, index=True)
+    name: Mapped[str] = mapped_column(String, index=True)
+    description: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True, default=None
+    )
+    hsn_code: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True, default=None, index=True
+    )
+    hsn_category: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True, default=None
+    )
+    isic_code: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True, default=None, index=True
+    )
+    isic_category: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True, default=None
+    )
+    unit_price: Mapped[Optional[float]] = mapped_column(
+        nullable=True, default=None
+    )
+    price_unit: Mapped[Optional[str]] = mapped_column(
+        String, nullable=True, default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
     )
 
 

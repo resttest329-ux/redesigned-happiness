@@ -13,6 +13,9 @@ from datetime import datetime
 
 
 TIN_PATTERN = re.compile(r"^\d{8}-\d{4}$")
+HSN_PATTERN = re.compile(r"^\d{4}\.\d{2}$")
+ISIC_PATTERN = re.compile(r"^\d{4}$")
+SKU_PATTERN = re.compile(r"^[A-Za-z0-9._\-]{1,64}$")
 
 
 def validate_tin(value: Optional[str]) -> Optional[str]:
@@ -366,6 +369,126 @@ class InvoiceLogPage(BaseModel):
     offset: int
     limit: int
     items: list[InvoiceLogOut]
+
+
+class ItemBase(BaseModel):
+    sku: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=200)
+    description: Optional[str] = Field(default=None, max_length=2000)
+    hsn_code: Optional[str] = None
+    hsn_category: Optional[str] = Field(default=None, max_length=200)
+    isic_code: Optional[str] = None
+    isic_category: Optional[str] = Field(default=None, max_length=200)
+    unit_price: Optional[float] = Field(default=None, ge=0)
+    price_unit: Optional[str] = Field(default=None, max_length=64)
+
+    @field_validator("sku")
+    @classmethod
+    def _validate_sku(cls, v: str) -> str:
+        v = (v or "").strip()
+        if not SKU_PATTERN.match(v):
+            raise ValueError(
+                "SKU may only contain letters, digits, '.', '_' or '-' "
+                "and must be 1-64 characters."
+            )
+        return v
+
+    @field_validator(
+        "name", "description", "hsn_category", "isic_category", "price_unit"
+    )
+    @classmethod
+    def _strip_str(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        return v or None
+
+    @field_validator("hsn_code")
+    @classmethod
+    def _validate_hsn(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        v = v.strip()
+        if not HSN_PATTERN.match(v):
+            raise ValueError(
+                "HS code must use the FIRS format XXXX.XX (e.g. 1006.10)."
+            )
+        return v
+
+    @field_validator("isic_code")
+    @classmethod
+    def _validate_isic(cls, v: Optional[str]) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        v = v.strip()
+        if not ISIC_PATTERN.match(v):
+            raise ValueError(
+                "ISIC service code must be exactly 4 digits (e.g. 0112)."
+            )
+        return v
+
+    @model_validator(mode="after")
+    def _validate_exactly_one_code(self):
+        has_hsn = bool(self.hsn_code)
+        has_isic = bool(self.isic_code)
+        if has_hsn and has_isic:
+            raise ValueError(
+                "An item must carry either an HS code (product) or an ISIC "
+                "code (service), not both."
+            )
+        if not has_hsn and not has_isic:
+            raise ValueError(
+                "An item must carry exactly one classification: either an HS "
+                "code (product) or an ISIC code (service)."
+            )
+        # Enforce paired category is only present for the code that is set.
+        if has_hsn and self.isic_category:
+            self.isic_category = None
+        if has_isic and self.hsn_category:
+            self.hsn_category = None
+        return self
+
+
+class ItemCreate(ItemBase):
+    pass
+
+
+class ItemUpdate(ItemBase):
+    pass
+
+
+class ItemOut(ItemBase):
+    id: int
+    business_id: str
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ItemPage(BaseModel):
+    total: int
+    offset: int
+    limit: int
+    items: list[ItemOut]
+
+
+class ItemBulkDelete(BaseModel):
+    ids: list[int] = Field(default_factory=list, max_length=500)
+
+
+class ItemImportRowError(BaseModel):
+    row: int
+    sku: Optional[str] = None
+    error: str
+
+
+class ItemImportResult(BaseModel):
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    errors: list[ItemImportRowError] = Field(default_factory=list)
+    total_rows: int = 0
 
 
 class SessionCreate(BaseModel):

@@ -15,6 +15,7 @@ from routes.customer_routes import router as customer_router
 from routes.invoice_log_routes import router as invoice_log_router
 from routes.session_routes import router as session_router
 from routes.invoice_routes import router as invoice_router
+from routes.item_routes import router as item_router
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -59,6 +60,7 @@ app.include_router(customer_router)
 app.include_router(invoice_log_router)
 app.include_router(session_router)
 app.include_router(invoice_router)
+app.include_router(item_router)
 
 
 @app.get("/")

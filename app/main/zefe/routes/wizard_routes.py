@@ -1484,6 +1484,126 @@ def _line_form_fields(
     return Div(*children, id="line-form-fields")
 
 
+def _saved_item_hit_row(item: dict) -> Button:
+    kind_label = (
+        "Product"
+        if item.get("hsn_code")
+        else ("Service" if item.get("isic_code") else "Item")
+    )
+    badge_cls = (
+        "bg-indigo-100 text-indigo-700"
+        if kind_label == "Product"
+        else (
+            "bg-purple-100 text-purple-700"
+            if kind_label == "Service"
+            else "bg-slate-100 text-slate-600"
+        )
+    )
+    code_display = ""
+    if item.get("hsn_code"):
+        code_display = f"HS {item['hsn_code']}"
+    elif item.get("isic_code"):
+        code_display = f"ISIC {item['isic_code']}"
+    price = item.get("unit_price")
+    price_display = f"{float(price):,.2f}" if price not in (None, "") else "—"
+    return Button(
+        Div(
+            Div(
+                Span(
+                    kind_label,
+                    cls=(
+                        f"inline-flex items-center px-2 py-0.5 rounded-full "
+                        f"text-[10px] font-semibold uppercase tracking-wider "
+                        f"w-fit shrink-0 {badge_cls}"
+                    ),
+                ),
+                Span(
+                    item.get("sku", ""),
+                    cls="text-sm font-mono font-semibold text-slate-900 shrink-0",
+                ),
+                P(
+                    item.get("name", ""),
+                    cls="text-sm text-slate-700 truncate min-w-0 flex-1",
+                ),
+                cls="flex items-center gap-2 min-w-0",
+            ),
+            P(
+                (code_display + " · " if code_display else "")
+                + f"{price_display} {item.get('price_unit', '') or ''}",
+                cls="text-xs text-slate-500 font-mono text-left mt-1",
+            ),
+            cls="min-w-0 w-full",
+        ),
+        type="button",
+        hx_get=f"/invoices/wizard/line/pick-item/{item.get('id', 0)}",
+        hx_include=(
+            "[name='invoiced_quantity'],[name='price_amount'],[name='base_quantity']"
+        ),
+        hx_target="#line-form-fields",
+        hx_swap="outerHTML",
+        cls=(
+            "w-full px-3 py-3 hover:bg-indigo-50 border-b border-slate-100 "
+            "last:border-b-0 text-left transition-colors cursor-pointer block"
+        ),
+    )
+
+
+def _saved_items_picker(hits: list[dict] | None, query: str = "") -> Div:
+    hits = hits or []
+    if query:
+        if hits:
+            results = Div(
+                *[_saved_item_hit_row(it) for it in hits],
+                id="saved-item-results",
+                cls=(
+                    "mt-2 max-h-56 overflow-auto rounded-lg border "
+                    "border-slate-200 bg-white shadow-xs animate-fade-in-up"
+                ),
+            )
+        else:
+            results = Div(
+                P(
+                    "No saved items match this search.",
+                    cls="text-xs text-slate-500 px-3 py-3",
+                ),
+                id="saved-item-results",
+                cls="mt-2 rounded-lg border border-slate-200 bg-slate-50/60",
+            )
+    else:
+        results = Div(id="saved-item-results")
+    return Div(
+        Div(
+            icon(
+                "search",
+                cls="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none",
+            ),
+            Input(
+                type="search",
+                name="saved_item_q",
+                placeholder="Search your saved items by SKU or name…",
+                value=query,
+                autocomplete="off",
+                hx_get="/invoices/wizard/line/saved-items",
+                hx_trigger="keyup changed delay:300ms, search",
+                hx_target="#saved-item-results",
+                hx_swap="outerHTML",
+                cls=(
+                    "w-full pl-9 pr-3 py-2 bg-white text-slate-900 border "
+                    "border-slate-300 rounded-lg text-sm focus:outline-none "
+                    "focus:ring-2 focus:ring-indigo-500"
+                ),
+            ),
+            cls="relative",
+        ),
+        guidance_text(
+            "Selecting a saved item fills in the name, description, classification, "
+            "unit price, and unit. You can still adjust quantity and price below."
+        ),
+        results,
+        cls="mb-4 p-4 bg-indigo-50/30 border border-indigo-100 rounded-lg",
+    )
+
+
 def _line_modal(
     *,
     edit_idx: int = -1,
@@ -1548,7 +1668,12 @@ def _line_modal(
                 Div(
                     Div(
                         Label(
-                            "Item lookup",
+                            "Pick from your saved items (optional)",
+                            cls="block text-sm font-medium text-slate-700 mb-1.5",
+                        ),
+                        _saved_items_picker(None, ""),
+                        Label(
+                            "Or search FIRS classifications directly",
                             cls="block text-sm font-medium text-slate-700 mb-1.5",
                         ),
                         guidance_panel(
@@ -1955,11 +2080,103 @@ def _stage_card(
     )
 
 
+def _signing_secret_setup_card() -> Div:
+    """Inline card that lets the user set a signing secret without leaving
+    the invoice wizard. Posts to /invoices/wizard/set-secret which delegates
+    to the existing /auth/me/secret settings API and returns the user back
+    to step 4 on success."""
+    return Div(
+        Div(
+            icon("alert-circle", cls="h-4 w-4 text-amber-600 shrink-0 mt-0.5"),
+            Div(
+                P(
+                    "You need a signing secret before you can sign",
+                    cls="text-sm font-semibold text-amber-800",
+                ),
+                P(
+                    "Set a short passphrase you'll enter each time you "
+                    "authorise an invoice. It's stored securely with FIRS "
+                    "and never kept in your browser. You can update it "
+                    "later from Settings \u2192 Signing Secret.",
+                    cls="text-xs text-amber-700 mt-1 leading-relaxed",
+                ),
+                cls="flex-1 min-w-0",
+            ),
+            cls="flex items-start gap-2 p-3 mb-4 bg-amber-50 border border-amber-200 rounded-lg",
+        ),
+        Form(
+            Div(
+                Label(
+                    "New signing secret",
+                    fr="wizard_new_secret",
+                    cls="block text-sm font-medium text-slate-700 mb-1.5",
+                ),
+                Input(
+                    id="wizard_new_secret",
+                    name="user_secret",
+                    type="password",
+                    required=True,
+                    autocomplete="new-password",
+                    placeholder="Choose a signing secret",
+                    cls=(
+                        "w-full px-3 py-2 bg-white text-slate-900 border "
+                        "border-slate-300 rounded-lg text-sm focus:outline-none "
+                        "focus:ring-2 focus:ring-indigo-500"
+                    ),
+                ),
+                cls="mb-3",
+            ),
+            Div(
+                Label(
+                    "Confirm secret",
+                    fr="wizard_confirm_secret",
+                    cls="block text-sm font-medium text-slate-700 mb-1.5",
+                ),
+                Input(
+                    id="wizard_confirm_secret",
+                    name="confirm_secret",
+                    type="password",
+                    required=True,
+                    autocomplete="new-password",
+                    placeholder="Re-enter to confirm",
+                    cls=(
+                        "w-full px-3 py-2 bg-white text-slate-900 border "
+                        "border-slate-300 rounded-lg text-sm focus:outline-none "
+                        "focus:ring-2 focus:ring-indigo-500"
+                    ),
+                ),
+                cls="mb-4",
+            ),
+            Button(
+                Span(
+                    icon("check-circle", cls="h-4 w-4"),
+                    Span("Save signing secret & continue"),
+                    cls="zefe-busy-label inline-flex items-center gap-2",
+                ),
+                Span(
+                    icon("loader", cls="h-4 w-4"),
+                    cls="zefe-busy-spinner",
+                ),
+                type="submit",
+                data_zefe_busy="1",
+                cls=(
+                    "inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 "
+                    "text-white text-sm font-medium rounded-lg hover:bg-indigo-700 "
+                    "shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                ),
+            ),
+            method="post",
+            action="/invoices/wizard/set-secret",
+        ),
+    )
+
+
 def _render_step4(
     *,
     wizard: dict,
     error: str = "",
     success: str = "",
+    has_secret: bool = True,
 ) -> Div:
     validated = bool(wizard.get("_validated"))
     signed = bool(wizard.get("_signed"))
@@ -2004,9 +2221,17 @@ def _render_step4(
             ),
             Form(
                 Button(
-                    icon("check-circle", cls="h-4 w-4"),
-                    Span("Re-validate"),
+                    Span(
+                        icon("check-circle", cls="h-4 w-4"),
+                        Span("Re-validate"),
+                        cls="zefe-busy-label inline-flex items-center gap-1.5",
+                    ),
+                    Span(
+                        icon("loader", cls="h-4 w-4"),
+                        cls="zefe-busy-spinner",
+                    ),
                     type="submit",
+                    data_zefe_busy="1",
                     cls=(
                         "inline-flex items-center gap-2 px-3 py-1.5 bg-white "
                         "border border-slate-300 text-slate-600 text-xs font-medium "
@@ -2022,14 +2247,23 @@ def _render_step4(
         validate_body = Div(
             P(
                 "Run a quick check against the FIRS schema before you can sign. "
-                "This catches missing fields, malformed codes, or invalid amounts.",
+                "This catches missing fields, malformed codes, or invalid amounts. "
+                "Validation can take a few seconds while we contact FIRS.",
                 cls="text-sm text-slate-600 mb-3",
             ),
             Form(
                 Button(
-                    icon("check-circle", cls="h-4 w-4"),
-                    Span("Validate now"),
+                    Span(
+                        icon("check-circle", cls="h-4 w-4"),
+                        Span("Validate now"),
+                        cls="zefe-busy-label inline-flex items-center gap-2",
+                    ),
+                    Span(
+                        icon("loader", cls="h-4 w-4"),
+                        cls="zefe-busy-spinner",
+                    ),
                     type="submit",
+                    data_zefe_busy="1",
                     cls=(
                         "inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 "
                         "text-white text-sm font-medium rounded-lg hover:bg-indigo-700 "
@@ -2059,6 +2293,8 @@ def _render_step4(
             ),
             cls="flex items-center gap-2 px-3 py-2 bg-emerald-50 rounded-lg border border-emerald-200",
         )
+    elif sign_state == "active" and not has_secret:
+        sign_body = _signing_secret_setup_card()
     elif sign_state == "active":
         sign_body = Form(
             Div(
@@ -2107,9 +2343,17 @@ def _render_step4(
                 cls="mb-4",
             ),
             Button(
-                icon("check-circle", cls="h-4 w-4"),
-                Span("Sign invoice"),
+                Span(
+                    icon("check-circle", cls="h-4 w-4"),
+                    Span("Sign invoice"),
+                    cls="zefe-busy-label inline-flex items-center gap-2",
+                ),
+                Span(
+                    icon("loader", cls="h-4 w-4"),
+                    cls="zefe-busy-spinner",
+                ),
                 type="submit",
+                data_zefe_busy="1",
                 cls=(
                     "inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 "
                     "text-white text-sm font-medium rounded-lg hover:bg-indigo-700 "
@@ -2149,15 +2393,29 @@ def _render_step4(
     elif transmit_state == "active":
         transmit_body = Div(
             P(
-                "Send the signed invoice to FIRS. You can also transmit later "
-                "from the invoice detail page if you'd rather review first.",
+                "Send the signed invoice to FIRS. Transmission is final \u2014 "
+                "the recipient will immediately see the invoice in their FIRS "
+                "portal. You can also transmit later from the invoice detail "
+                "page if you'd rather review first.",
                 cls="text-sm text-slate-600 mb-3",
             ),
             Form(
                 Button(
-                    icon("send", cls="h-4 w-4"),
-                    Span("Transmit to FIRS"),
+                    Span(
+                        icon("send", cls="h-4 w-4"),
+                        Span("Transmit to FIRS"),
+                        cls="zefe-busy-label inline-flex items-center gap-2",
+                    ),
+                    Span(
+                        icon("loader", cls="h-4 w-4"),
+                        cls="zefe-busy-spinner",
+                    ),
                     type="submit",
+                    data_zefe_busy="1",
+                    onclick=(
+                        "return confirm('Transmit this invoice to FIRS now? "
+                        "Once transmitted it cannot be recalled.');"
+                    ),
                     cls=(
                         "inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 "
                         "text-white text-sm font-medium rounded-lg hover:bg-emerald-700 "
@@ -2393,6 +2651,49 @@ def _wizard_layout(
 
 
 def register_routes(rt) -> None:
+    @rt("/invoices/wizard/set-secret", methods=["POST"])
+    async def wizard_set_secret(req: Request):
+        redirect = require_session(req)
+        if redirect:
+            return redirect
+        form = await req.form()
+        secret = (form.get("user_secret") or "").strip()
+        confirm = (form.get("confirm_secret") or "").strip()
+        if not secret:
+            return RedirectResponse(
+                "/invoices/wizard?step=4&error=Signing+secret+cannot+be+empty",
+                status_code=303,
+            )
+        if secret != confirm:
+            return RedirectResponse(
+                "/invoices/wizard?step=4&error=Secrets+do+not+match",
+                status_code=303,
+            )
+        jwt = current_jwt(req)
+        sid = get_session_id(req)
+        try:
+            await api_client.update_secret(jwt, secret, session_id=sid)
+        except api_client.APIError as e:
+            logger.exception("wizard_set_secret: update_secret api error")
+            detail = extract_api_error_detail(e)
+            return RedirectResponse(
+                f"/invoices/wizard?step=4&error={urllib.parse.quote_plus(detail)}",
+                status_code=303,
+            )
+        except Exception:
+            logger.exception("wizard_set_secret: transport error")
+            return RedirectResponse(
+                "/invoices/wizard?step=4&error=Backend+service+unavailable",
+                status_code=303,
+            )
+        return RedirectResponse(
+            "/invoices/wizard?step=4&success="
+            + urllib.parse.quote_plus(
+                "Signing secret saved. You can now sign the invoice."
+            ),
+            status_code=303,
+        )
+
     @rt("/invoices/wizard/discard-confirm", methods=["GET"])
     def discard_confirm(req: Request):
         return Div(
@@ -2549,7 +2850,20 @@ def register_routes(rt) -> None:
                 business_id=current_business_id(req),
             )
 
-        body = _render_step4(wizard=wizard, error=error, success=success)
+        has_secret = True
+        try:
+            secret_status = await api_client.get_user_secret_status(
+                jwt, session_id=sid
+            )
+            has_secret = bool((secret_status or {}).get("has_secret"))
+        except Exception:
+            logger.exception("wizard step4: get_user_secret_status failed")
+        body = _render_step4(
+            wizard=wizard,
+            error=error,
+            success=success,
+            has_secret=has_secret,
+        )
         return _wizard_layout(
             "Review & sign",
             "Validate against FIRS schema, sign with your secret, and optionally transmit.",
@@ -2884,6 +3198,94 @@ def register_routes(rt) -> None:
             return HTMLResponse("")
         unit = _default_price_unit(wizard)
         return _line_modal(edit_idx=idx, line=lines[idx], default_unit=unit)
+
+    @rt("/invoices/wizard/line/saved-items", methods=["GET"])
+    async def saved_items_search(req: Request, saved_item_q: str = ""):
+        redirect = require_session(req)
+        if redirect:
+            return redirect
+        q = (saved_item_q or "").strip()
+        if len(q) < 1:
+            return Div(id="saved-item-results")
+        jwt = current_jwt(req)
+        sid = get_session_id(req)
+        try:
+            result = await api_client.list_items(
+                jwt, session_id=sid, search=q, limit=15
+            )
+            items = result.get("items", []) or []
+        except Exception:
+            logger.exception("saved_items_search failed")
+            items = []
+        if not items:
+            return Div(
+                P(
+                    "No saved items match this search.",
+                    cls="text-xs text-slate-500 px-3 py-3",
+                ),
+                id="saved-item-results",
+                cls="mt-2 rounded-lg border border-slate-200 bg-slate-50/60",
+            )
+        return Div(
+            *[_saved_item_hit_row(it) for it in items],
+            id="saved-item-results",
+            cls=(
+                "mt-2 max-h-56 overflow-auto rounded-lg border "
+                "border-slate-200 bg-white shadow-xs animate-fade-in-up"
+            ),
+        )
+
+    @rt("/invoices/wizard/line/pick-item/{iid}", methods=["GET"])
+    async def pick_saved_item(
+        req: Request,
+        iid: int,
+        invoiced_quantity: str = "",
+        price_amount: str = "",
+        base_quantity: str = "",
+    ):
+        redirect = require_session(req)
+        if redirect:
+            return redirect
+        jwt = current_jwt(req)
+        sid = get_session_id(req)
+        wizard = _load_wizard(sid)
+        default_unit = _default_price_unit(wizard)
+        try:
+            item = await api_client.get_item(jwt, iid, session_id=sid)
+        except Exception:
+            logger.exception("pick_saved_item: get_item failed")
+            return _line_form_fields(
+                {},
+                error="Could not load that saved item. Please try again.",
+                default_unit=default_unit,
+            )
+        # Preserve user's current qty/price if they've already typed something.
+        qty = (invoiced_quantity or "").strip() or "1"
+        current_price = (price_amount or "").strip()
+        item_price = item.get("unit_price")
+        if item_price not in (None, ""):
+            try:
+                default_price = f"{float(item_price):.2f}"
+            except (TypeError, ValueError):
+                default_price = "0.00"
+        else:
+            default_price = "0.00"
+        price = current_price or default_price
+        base_qty = (base_quantity or "").strip() or "1"
+        line = {
+            "name": item.get("name", "") or "",
+            "description": item.get("description", "") or "",
+            "sellers_item_identification": item.get("sku", "") or "",
+            "hsn_code": item.get("hsn_code", "") or "",
+            "product_category": item.get("hsn_category", "") or "",
+            "isic_code": item.get("isic_code", "") or "",
+            "service_category": item.get("isic_category", "") or "",
+            "invoiced_quantity": qty,
+            "price_amount": price,
+            "base_quantity": base_qty,
+            "price_unit": item.get("price_unit") or default_unit,
+        }
+        return _line_form_fields(line, default_unit=default_unit)
 
     @rt("/invoices/wizard/line/lookup", methods=["GET"])
     async def line_lookup(req: Request, lookup_q: str = ""):

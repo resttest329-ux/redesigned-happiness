@@ -583,9 +583,21 @@ def register_routes(rt) -> None:
                 ),
                 Form(
                     Button(
-                        icon("send", cls="h-4 w-4"),
-                        Span("Transmit"),
+                        Span(
+                            icon("send", cls="h-4 w-4"),
+                            Span("Transmit"),
+                            cls="zefe-busy-label inline-flex items-center gap-2",
+                        ),
+                        Span(
+                            icon("loader", cls="h-4 w-4"),
+                            cls="zefe-busy-spinner",
+                        ),
                         type="submit",
+                        data_zefe_busy="1",
+                        onclick=(
+                            "return confirm('Transmit this invoice to FIRS now? "
+                            "Once transmitted it cannot be recalled.');"
+                        ),
                         cls="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700",
                     ),
                     method="post",
@@ -769,7 +781,28 @@ def register_routes(rt) -> None:
                 cls="mb-3",
             ),
             Div(
-                primary_button("Update status", type="submit"),
+                Button(
+                    Span(
+                        icon("check-circle", cls="h-4 w-4"),
+                        Span("Update status"),
+                        cls="zefe-busy-label inline-flex items-center gap-2",
+                    ),
+                    Span(
+                        icon("loader", cls="h-4 w-4"),
+                        cls="zefe-busy-spinner",
+                    ),
+                    type="submit",
+                    data_zefe_busy="1",
+                    onclick=(
+                        "return confirm('Update the FIRS payment status for "
+                        "this invoice? PAID and REJECTED are final and cannot "
+                        "be reverted.');"
+                    ),
+                    cls=(
+                        "inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 "
+                        "text-white font-medium text-sm rounded-lg hover:bg-indigo-700"
+                    ),
+                ),
                 cls="flex justify-end",
             ),
             status_form_script,
