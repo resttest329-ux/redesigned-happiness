@@ -1,0 +1,455 @@
+from __future__ import annotations
+
+import logging
+from io import BytesIO
+from typing import Any
+
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER, TA_RIGHT
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import (
+    Paragraph,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
+)
+
+logger = logging.getLogger(__name__)
+
+INDIGO = colors.HexColor("#4f46e5")
+INDIGO_LIGHT = colors.HexColor("#e0e7ff")
+SLATE_950 = colors.HexColor("#030712")
+SLATE_900 = colors.HexColor("#0f172a")
+SLATE_700 = colors.HexColor("#334155")
+SLATE_500 = colors.HexColor("#64748b")
+SLATE_300 = colors.HexColor("#cbd5e1")
+SLATE_200 = colors.HexColor("#e2e8f0")
+SLATE_100 = colors.HexColor("#f1f5f9")
+SLATE_50 = colors.HexColor("#f8fafc")
+
+EMERALD_BG = colors.HexColor("#ecfdf5")
+EMERALD_TXT = colors.HexColor("#047857")
+AMBER_BG = colors.HexColor("#fffbeb")
+AMBER_TXT = colors.HexColor("#b45309")
+ROSE_BG = colors.HexColor("#fff1f2")
+ROSE_TXT = colors.HexColor("#be123c")
+SKY_BG = colors.HexColor("#f0f9ff")
+SKY_TXT = colors.HexColor("#0369a1")
+
+
+def _fmt_money(amount: Any, currency: str = "NGN") -> str:
+    try:
+        return f"{currency} {float(amount or 0):,.2f}"
+    except (TypeError, ValueError):
+        return f"{currency} 0.00"
+
+
+def _safe(s: Any) -> str:
+    if s is None:
+        return ""
+    return str(s)
+
+
+def _status_badge_theme(status: str) -> tuple[colors.Color, colors.Color]:
+    mapping = {
+        "PAID": (EMERALD_BG, EMERALD_TXT),
+        "PENDING": (AMBER_BG, AMBER_TXT),
+        "REJECTED": (ROSE_BG, ROSE_TXT),
+        "PARTIAL": (SKY_BG, SKY_TXT),
+    }
+    return mapping.get((status or "").upper(), (SLATE_100, SLATE_700))
+
+
+def _safe_str(v: Any) -> str:
+    if v is None:
+        return ""
+    return str(v)
+
+
+def _party_block(title: str, party: dict) -> str:
+    if not isinstance(party, dict):
+        party = {}
+    addr = party.get("postal_address") or {}
+    parts = [
+        _safe_str(addr.get("street_name", "")),
+        _safe_str(addr.get("city_name", "")),
+        _safe_str(addr.get("state", "")),
+        _safe_str(addr.get("country", "")),
+    ]
+    address = ", ".join(p for p in parts if p)
+    lines = [
+        f'<font color="#4f46e5" size="8"><b>{_safe_str(title)}</b></font>',
+        f'<font color="#0f172a" size="11"><b>{_safe_str(party.get("party_name"))}</b></font>',
+    ]
+    if party.get("tin"):
+        lines.append(
+            f'<font size="8.5" color="#334155"><b>TIN:</b> {_safe_str(party["tin"])}</font>'
+        )
+    if party.get("email"):
+        lines.append(
+            f'<font size="8.5" color="#334155">{_safe_str(party["email"])}</font>'
+        )
+    if party.get("telephone"):
+        lines.append(
+            f'<font size="8.5" color="#334155">{_safe_str(party["telephone"])}</font>'
+        )
+    if address:
+        lines.append(
+            f'<font size="8" color="#64748b">{_safe_str(address)}</font>'
+        )
+    return "<br/>".join(lines)
+
+
+def build_invoice_pdf(
+    invoice: dict,
+    log_entry: dict | None = None,
+) -> bytes:
+    buf = BytesIO()
+    irn = _safe(invoice.get("irn"))
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=18 * mm,
+        rightMargin=18 * mm,
+        topMargin=15 * mm,
+        bottomMargin=15 * mm,
+        title=f"Invoice {irn}" if irn else "Invoice",
+        author="Zetamind e-invoicing",
+    )
+
+    styles = getSampleStyleSheet()
+    body = ParagraphStyle(
+        "body",
+        parent=styles["Normal"],
+        fontName="Helvetica",
+        fontSize=9,
+        textColor=SLATE_700,
+        leading=13,
+    )
+    label = ParagraphStyle(
+        "label",
+        parent=styles["Normal"],
+        fontName="Helvetica-Bold",
+        fontSize=7.5,
+        textColor=SLATE_500,
+        leading=10,
+        alignment=TA_CENTER,
+    )
+    h_title = ParagraphStyle(
+        "h_title",
+        parent=styles["Heading1"],
+        fontName="Helvetica-Bold",
+        fontSize=24,
+        textColor=SLATE_950,
+        leading=26,
+        spaceAfter=0,
+    )
+    irn_style = ParagraphStyle(
+        "irn",
+        parent=body,
+        fontName="Courier-Bold",
+        fontSize=10.5,
+        textColor=INDIGO,
+        alignment=TA_RIGHT,
+        leading=13,
+    )
+    foot_style = ParagraphStyle(
+        "foot",
+        parent=body,
+        fontSize=7.5,
+        textColor=SLATE_500,
+        alignment=TA_CENTER,
+        leading=10,
+    )
+
+    elements = []
+
+    issue_date = _safe(invoice.get("issue_date")) or "—"
+    due_date = _safe(invoice.get("due_date")) or "—"
+    currency = _safe(invoice.get("document_currency_code")) or "NGN"
+    status = _safe(
+        (log_entry or {}).get("payment_status")
+        or invoice.get("payment_status")
+        or "PENDING"
+    )
+
+    header_data = [
+        [
+            Paragraph(_safe_str("INVOICE"), h_title),
+            Paragraph(
+                f'<font size="7" color="#64748b"><b>INVOICE REFERENCE NUMBER</b></font><br/>'
+                f'<font size="10.5" color="#4f46e5"><b>{_safe_str(irn)}</b></font>',
+                irn_style,
+            ),
+        ]
+    ]
+    header_tbl = Table(header_data, colWidths=[105 * mm, 69 * mm])
+    header_tbl.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("ALIGN", (1, 0), (1, 0), "RIGHT"),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+            ]
+        )
+    )
+    elements.append(header_tbl)
+    elements.append(Spacer(1, 6 * mm))
+
+    bg_color, txt_color = _status_badge_theme(status)
+    status_txt_hex = "#" + txt_color.hexval()[2:]
+
+    meta_data = [
+        [
+            Paragraph(_safe_str("ISSUE DATE"), label),
+            Paragraph(_safe_str("DUE DATE"), label),
+            Paragraph(_safe_str("STATUS"), label),
+            Paragraph(_safe_str("CURRENCY"), label),
+        ],
+        [
+            Paragraph(
+                f'<font size="9.5" color="#0f172a"><b>{_safe_str(issue_date)}</b></font>',
+                ParagraphStyle("md", parent=body, alignment=TA_CENTER),
+            ),
+            Paragraph(
+                f'<font size="9.5" color="#0f172a"><b>{_safe_str(due_date)}</b></font>',
+                ParagraphStyle("md", parent=body, alignment=TA_CENTER),
+            ),
+            Paragraph(
+                f'<font size="9.5" color="{status_txt_hex}"><b>{_safe_str(status)}</b></font>',
+                ParagraphStyle("md", parent=body, alignment=TA_CENTER),
+            ),
+            Paragraph(
+                f'<font size="9.5" color="#0f172a"><b>{_safe_str(currency)}</b></font>',
+                ParagraphStyle("md", parent=body, alignment=TA_CENTER),
+            ),
+        ],
+    ]
+    meta_tbl = Table(meta_data, colWidths=[43.5 * mm] * 4)
+    meta_tbl.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, -1), SLATE_50),
+                ("BACKGROUND", (2, 1), (2, 1), bg_color),
+                ("BOX", (0, 0), (-1, -1), 1, SLATE_200),
+                ("INNERGRID", (0, 0), (-1, -1), 0.5, SLATE_200),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 8),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    elements.append(meta_tbl)
+    elements.append(Spacer(1, 6 * mm))
+
+    supplier = invoice.get("accounting_supplier_party") or {}
+    customer = invoice.get("accounting_customer_party") or {}
+    party_data = [
+        [
+            Paragraph(_party_block("SUPPLIER (FROM)", supplier), body),
+            Paragraph(_party_block("CUSTOMER (BILL TO)", customer), body),
+        ]
+    ]
+    parties_tbl = Table(party_data, colWidths=[87 * mm, 87 * mm])
+    parties_tbl.setStyle(
+        TableStyle(
+            [
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("BACKGROUND", (0, 0), (-1, -1), colors.white),
+                ("BOX", (0, 0), (-1, -1), 1, SLATE_200),
+                ("LINEAFTER", (0, 0), (0, -1), 1, SLATE_200),
+                ("LEFTPADDING", (0, 0), (-1, -1), 12),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 12),
+                ("TOPPADDING", (0, 0), (-1, -1), 12),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 12),
+            ]
+        )
+    )
+    elements.append(parties_tbl)
+    elements.append(Spacer(1, 8 * mm))
+
+    lines = invoice.get("invoice_line") or []
+    line_data = [
+        [
+            Paragraph(
+                _safe_str('<font color="#334155"><b>#</b></font>'),
+                ParagraphStyle(
+                    "th1", parent=body, fontName="Helvetica-Bold", fontSize=8.5
+                ),
+            ),
+            Paragraph(
+                _safe_str(
+                    '<font color="#334155"><b>ITEM DESCRIPTION</b></font>'
+                ),
+                ParagraphStyle(
+                    "th2", parent=body, fontName="Helvetica-Bold", fontSize=8.5
+                ),
+            ),
+            Paragraph(
+                _safe_str(
+                    '<font color="#334155"><b>CLASSIFICATION CODE</b></font>'
+                ),
+                ParagraphStyle(
+                    "th3", parent=body, fontName="Helvetica-Bold", fontSize=8.5
+                ),
+            ),
+            Paragraph(
+                _safe_str('<font color="#334155"><b>QTY</b></font>'),
+                ParagraphStyle(
+                    "th4",
+                    parent=body,
+                    fontName="Helvetica-Bold",
+                    fontSize=8.5,
+                    alignment=TA_RIGHT,
+                ),
+            ),
+            Paragraph(
+                _safe_str('<font color="#334155"><b>UNIT PRICE</b></font>'),
+                ParagraphStyle(
+                    "th5",
+                    parent=body,
+                    fontName="Helvetica-Bold",
+                    fontSize=8.5,
+                    alignment=TA_RIGHT,
+                ),
+            ),
+            Paragraph(
+                _safe_str('<font color="#334155"><b>TOTAL AMOUNT</b></font>'),
+                ParagraphStyle(
+                    "th6",
+                    parent=body,
+                    fontName="Helvetica-Bold",
+                    fontSize=8.5,
+                    alignment=TA_RIGHT,
+                ),
+            ),
+        ]
+    ]
+    for i, ln in enumerate(lines, 1):
+        if not isinstance(ln, dict):
+            continue
+        item = ln.get("item") or {}
+        price = ln.get("price") or {}
+        try:
+            qty = float(ln.get("invoiced_quantity", 0) or 0)
+        except (TypeError, ValueError):
+            qty = 0.0
+        try:
+            unit = float(price.get("price_amount", 0) or 0)
+        except (TypeError, ValueError):
+            unit = 0.0
+        try:
+            total = float(ln.get("line_extension_amount", qty * unit) or 0)
+        except (TypeError, ValueError):
+            total = qty * unit
+        code = _safe_str(ln.get("hsn_code") or ln.get("isic_code"))
+        name = _safe_str(item.get("name"))
+        desc = _safe_str(item.get("description"))
+        cell = f"<b>{name}</b>"
+        if desc:
+            cell += f'<br/><font size="7.5" color="#64748b">{desc}</font>'
+        line_data.append(
+            [
+                Paragraph(_safe_str(i), body),
+                Paragraph(_safe_str(cell), body),
+                Paragraph(f'<font size="7.5">{_safe_str(code)}</font>', body),
+                f"{qty:,.2f}",
+                f"{unit:,.2f}",
+                f"{total:,.2f}",
+            ]
+        )
+
+    line_tbl = Table(
+        line_data,
+        colWidths=[10 * mm, 66 * mm, 30 * mm, 16 * mm, 24 * mm, 28 * mm],
+        repeatRows=1,
+    )
+
+    table_styles = [
+        ("BACKGROUND", (0, 0), (-1, 0), SLATE_50),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LINEBELOW", (0, 0), (-1, 0), 1.5, SLATE_300),
+        ("LINEBELOW", (0, 1), (-1, -1), 0.5, SLATE_100),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
+        ("ALIGN", (3, 1), (-1, -1), "RIGHT"),
+        ("FONTSIZE", (0, 1), (-1, -1), 9),
+        ("TEXTCOLOR", (0, 1), (-1, -1), SLATE_900),
+    ]
+    for r_idx in range(1, len(line_data)):
+        if r_idx % 2 == 0:
+            table_styles.append(
+                ("BACKGROUND", (0, r_idx), (-1, r_idx), SLATE_50)
+            )
+
+    line_tbl.setStyle(TableStyle(table_styles))
+    elements.append(line_tbl)
+    elements.append(Spacer(1, 6 * mm))
+
+    totals = invoice.get("legal_monetary_total") or {}
+    tax_total = invoice.get("tax_total") or []
+    tax_amount = 0.0
+    if isinstance(tax_total, list) and tax_total:
+        try:
+            tax_amount = float(tax_total[0].get("tax_amount", 0) or 0)
+        except (TypeError, ValueError, AttributeError):
+            logging.exception("Unexpected error")
+            tax_amount = 0.0
+    try:
+        sub = float(totals.get("tax_exclusive_amount", 0) or 0)
+    except (TypeError, ValueError):
+        sub = 0.0
+    try:
+        payable = float(totals.get("payable_amount", 0) or 0)
+    except (TypeError, ValueError):
+        payable = 0.0
+
+    totals_data = [
+        ["", "Subtotal", str(_fmt_money(sub, currency))],
+        ["", "VAT (7.5%)", str(_fmt_money(tax_amount, currency))],
+        ["", "Total payable", str(_fmt_money(payable, currency))],
+    ]
+    totals_tbl = Table(totals_data, colWidths=[106 * mm, 36 * mm, 32 * mm])
+    totals_tbl.setStyle(
+        TableStyle(
+            [
+                ("ALIGN", (1, 0), (-1, -1), "RIGHT"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("TEXTCOLOR", (1, 0), (1, -1), SLATE_500),
+                ("TEXTCOLOR", (2, 0), (2, -1), SLATE_900),
+                ("LINEABOVE", (1, 2), (-1, 2), 1.5, INDIGO_LIGHT),
+                ("FONTNAME", (1, 2), (-1, 2), "Helvetica-Bold"),
+                ("TEXTCOLOR", (1, 2), (-1, 2), SLATE_900),
+                ("FONTSIZE", (1, 2), (-1, 2), 10.5),
+                ("TEXTCOLOR", (2, 2), (2, 2), INDIGO),
+                ("TOPPADDING", (0, 0), (-1, -1), 6),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
+    elements.append(totals_tbl)
+
+    elements.append(Spacer(1, 16 * mm))
+    elements.append(
+        Paragraph(
+            _safe_str(
+                "Generated by Zefe e-Invoicing · "
+                "Authorized and verified against the Federal Inland Revenue Service (FIRS) gateway using the IRN."
+            ),
+            foot_style,
+        )
+    )
+
+    try:
+        doc.build(elements)
+    except Exception:
+        logger.exception("build_invoice_pdf failed")
+        raise
+    return buf.getvalue()

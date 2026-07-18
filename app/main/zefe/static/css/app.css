@@ -1,0 +1,57 @@
+:root {
+  --zefe-bg: #f8fafc;
+  --zefe-accent: #4f46e5;
+  --zefe-accent-hover: #4338ca;
+}
+
+html, body {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background-color: var(--zefe-bg);
+  color: #0f172a;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Plus Jakarta Sans', 'Inter', system-ui, sans-serif;
+  letter-spacing: -0.02em;
+}
+
+*:focus-visible {
+  outline: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 999px;
+  border: 2px solid #f8fafc;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: #94a3b8;
+}
+
+.tw-warn { display: none !important; }
+
+.htmx-indicator {
+  opacity: 0;
+  transition: opacity 200ms ease-in;
+}
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator {
+  opacity: 1;
+}
+
+@keyframes zefe-fade-in-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in-up {
+  animation: zefe-fade-in-up 160ms ease-out both;
+}
