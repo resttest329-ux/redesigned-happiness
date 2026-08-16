@@ -8,6 +8,7 @@ import httpx
 
 from config import BACKEND_URL
 from services import auth_service
+import endpoints
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +111,7 @@ async def login(username: str, password: str) -> dict:
     _assert_client()
     try:
         resp = await _client.post(
-            "/auth/token",
+            endpoints.AUTH_TOKEN,
             data={
                 "username": username,
                 "password": password,
@@ -146,7 +147,7 @@ async def register(
     if public_key is not None:
         body["public_key"] = public_key
     try:
-        resp = await _client.post("/auth/register", json=body)
+        resp = await _client.post(endpoints.AUTH_REGISTER, json=body)
     except httpx.RequestError as e:
         logging.exception("Unexpected error")
         raise TransportError(e)
@@ -155,14 +156,14 @@ async def register(
 
 
 async def get_me(token: str, session_id: Optional[str] = None) -> dict:
-    resp = await _get("/auth/me", token, session_id=session_id)
+    resp = await _get(endpoints.AUTH_ME, token, session_id=session_id)
     return resp.json()
 
 
 async def get_user_secret_status(
     token: str, session_id: Optional[str] = None
 ) -> dict:
-    resp = await _get("/auth/me/secret", token, session_id=session_id)
+    resp = await _get(endpoints.AUTH_ME_SECRET, token, session_id=session_id)
     return resp.json()
 
 
@@ -170,7 +171,7 @@ async def refresh_token(session_id: str) -> str:
     _assert_client()
     try:
         resp = await _client.post(
-            "/auth/refresh", json={"session_id": session_id}
+            endpoints.AUTH_REFRESH, json={"session_id": session_id}
         )
     except httpx.RequestError as e:
         logging.exception("Unexpected error")
@@ -183,7 +184,7 @@ async def patch_session_token(session_id: str, new_jwt: str) -> None:
     _assert_client()
     try:
         resp = await _client.patch(
-            f"/sessions/{session_id}/token", json={"jwt_token": new_jwt}
+            endpoints.SESSIONS_TOKEN.format(session_id=session_id), json={"jwt_token": new_jwt}
         )
     except httpx.RequestError as e:
         logging.exception("Unexpected error")
@@ -202,41 +203,41 @@ async def _lookup_get(
 async def get_invoice_types(
     token: str, session_id: Optional[str] = None
 ) -> list:
-    return await _lookup_get("/lookup/types-of-invoice", token, session_id)
+    return await _lookup_get(endpoints.LOOKUP_INVOICE_TYPES, token, session_id)
 
 
 async def get_payment_means(
     token: str, session_id: Optional[str] = None
 ) -> list:
-    return await _lookup_get("/lookup/payment-means", token, session_id)
+    return await _lookup_get(endpoints.LOOKUP_PAYMENT_MEANS, token, session_id)
 
 
 async def get_currencies(token: str, session_id: Optional[str] = None) -> list:
-    return await _lookup_get("/lookup/get-currency", token, session_id)
+    return await _lookup_get(endpoints.LOOKUP_CURRENCIES, token, session_id)
 
 
 async def get_tax_categories(
     token: str, session_id: Optional[str] = None
 ) -> list:
-    return await _lookup_get("/lookup/tax-categories", token, session_id)
+    return await _lookup_get(endpoints.LOOKUP_TAX_CATEGORIES, token, session_id)
 
 
 async def get_state_codes(token: str, session_id: Optional[str] = None) -> list:
-    return await _lookup_get("/lookup/state-codes", token, session_id)
+    return await _lookup_get(endpoints.LOOKUP_STATE_CODES, token, session_id)
 
 
 async def get_lga_codes(token: str, session_id: Optional[str] = None) -> list:
-    return await _lookup_get("/lookup/lga-codes", token, session_id)
+    return await _lookup_get(endpoints.LOOKUP_LGA_CODES, token, session_id)
 
 
 async def get_countries(token: str, session_id: Optional[str] = None) -> list:
-    return await _lookup_get("/lookup/countries", token, session_id)
+    return await _lookup_get(endpoints.LOOKUP_COUNTRIES, token, session_id)
 
 
 async def get_units_of_measurement(
     token: str, session_id: Optional[str] = None
 ) -> list:
-    return await _lookup_get("/lookup/units-of-measurement", token, session_id)
+    return await _lookup_get(endpoints.LOOKUP_UNITS, token, session_id)
 
 
 async def list_customers(
@@ -249,14 +250,14 @@ async def list_customers(
     params = {"offset": offset, "limit": limit}
     if search:
         params["search"] = search
-    resp = await _get("/customers", token, session_id=session_id, params=params)
+    resp = await _get(endpoints.CUSTOMERS, token, session_id=session_id, params=params)
     return resp.json()
 
 
 async def get_invoice_stats(
     token: str, session_id: Optional[str] = None
 ) -> dict:
-    resp = await _get("/invoice-log/stats", token, session_id=session_id)
+    resp = await _get(endpoints.INVOICE_LOG_STATS, token, session_id=session_id)
     return resp.json()
 
 
@@ -271,7 +272,7 @@ async def get_invoice_log(
     if search:
         params["search"] = search
     resp = await _get(
-        "/invoice-log", token, session_id=session_id, params=params
+        endpoints.INVOICE_LOG, token, session_id=session_id, params=params
     )
     return resp.json()
 
@@ -282,7 +283,7 @@ async def get_invoice_log_by_irn(
     _assert_client()
     headers = {"Authorization": f"Bearer {token}"}
     try:
-        resp = await _client.get(f"/invoice-log/{irn}", headers=headers)
+        resp = await _client.get(endpoints.INVOICE_LOG_BY_IRN.format(irn=irn), headers=headers)
     except httpx.RequestError as e:
         logging.exception("Unexpected error")
         raise TransportError(e)
@@ -299,7 +300,7 @@ async def mark_transmitted(
         _assert_client()
         try:
             r = await _client.patch(
-                f"/invoice-log/{irn}/transmitted",
+                endpoints.INVOICE_LOG_TRANSMITTED.format(irn=irn),
                 headers={"Authorization": f"Bearer {tok}"},
             )
         except httpx.RequestError as e:
@@ -318,7 +319,7 @@ async def update_log_status(
         _assert_client()
         try:
             r = await _client.patch(
-                f"/invoice-log/{irn}/status",
+                endpoints.INVOICE_LOG_STATUS.format(irn=irn),
                 json={"payment_status": payment_status},
                 headers={"Authorization": f"Bearer {tok}"},
             )
@@ -338,7 +339,7 @@ async def create_customer(
         _assert_client()
         try:
             r = await _client.post(
-                "/customers",
+                endpoints.CUSTOMERS,
                 json=payload,
                 headers={"Authorization": f"Bearer {tok}"},
             )
@@ -354,7 +355,7 @@ async def create_customer(
 async def get_customer(
     token: str, cid: int, session_id: Optional[str] = None
 ) -> dict:
-    resp = await _get(f"/customers/{cid}", token, session_id=session_id)
+    resp = await _get(endpoints.CUSTOMERS_BY_ID.format(cid=cid), token, session_id=session_id)
     return resp.json()
 
 
@@ -365,7 +366,7 @@ async def update_customer(
         _assert_client()
         try:
             r = await _client.patch(
-                f"/customers/{cid}",
+                endpoints.CUSTOMERS_BY_ID.format(cid=cid),
                 json=payload,
                 headers={"Authorization": f"Bearer {tok}"},
             )
@@ -385,7 +386,7 @@ async def delete_customer(
         _assert_client()
         try:
             r = await _client.delete(
-                f"/customers/{cid}",
+                endpoints.CUSTOMERS_BY_ID.format(cid=cid),
                 headers={"Authorization": f"Bearer {tok}"},
             )
         except httpx.RequestError as e:
@@ -403,7 +404,7 @@ async def update_profile(
         _assert_client()
         try:
             r = await _client.patch(
-                "/auth/me/profile",
+                endpoints.AUTH_ME_PROFILE,
                 json=payload,
                 headers={"Authorization": f"Bearer {tok}"},
             )
@@ -431,7 +432,7 @@ async def update_cert_key(
             body["public_key"] = public_key
         try:
             r = await _client.patch(
-                "/auth/me/cert-key",
+                endpoints.AUTH_ME_CERT_KEY,
                 json=body,
                 headers={"Authorization": f"Bearer {tok}"},
             )
@@ -451,7 +452,7 @@ async def update_secret(
         _assert_client()
         try:
             r = await _client.patch(
-                "/auth/me/secret",
+                endpoints.AUTH_ME_SECRET,
                 json={"user_secret": secret},
                 headers={"Authorization": f"Bearer {tok}"},
             )
@@ -468,7 +469,7 @@ async def get_invoice(
     token: str, irn: str, session_id: Optional[str] = None
 ) -> dict:
     resp = await _get(
-        f"/invoice/get-invoice/{irn}", token, session_id=session_id
+        endpoints.INVOICE_GET.format(irn=irn), token, session_id=session_id
     )
     return resp.json()
 
@@ -481,7 +482,7 @@ async def get_invoice_qr(
     session_id: Optional[str] = None,
 ) -> str:
     resp = await _get(
-        f"/invoice/{irn}/qr",
+        endpoints.INVOICE_QR.format(irn=irn),
         token,
         session_id=session_id,
         params={"amount": amount, "date": date},
@@ -493,7 +494,7 @@ async def transmit_invoice(
     token: str, irn: str, session_id: Optional[str] = None
 ) -> dict:
     resp = await _get(
-        f"/invoice/transmit-invoice/{irn}", token, session_id=session_id
+        endpoints.INVOICE_TRANSMIT.format(irn=irn), token, session_id=session_id
     )
     return resp.json() if resp.content else {}
 
@@ -519,7 +520,7 @@ async def update_invoice_status(
             body["payment_update_date"] = payment_update_date
         try:
             r = await _client.patch(
-                f"/invoice/update-invoice/{irn}",
+                endpoints.INVOICE_UPDATE.format(irn=irn),
                 json=body,
                 headers={
                     "Authorization": f"Bearer {tok}",
@@ -542,7 +543,7 @@ async def assemble_invoice(
         _assert_client()
         try:
             r = await _client.post(
-                "/invoice/assemble",
+                endpoints.INVOICE_ASSEMBLE,
                 json={"wizard": wizard},
                 headers={"Authorization": f"Bearer {tok}"},
             )
@@ -562,7 +563,7 @@ async def validate_invoice(
         _assert_client()
         try:
             r = await _client.post(
-                "/invoice/validate-invoice",
+                endpoints.INVOICE_VALIDATE,
                 json=invoice_dict,
                 headers={"Authorization": f"Bearer {tok}"},
             )
@@ -585,7 +586,7 @@ async def sign_invoice(
         _assert_client()
         try:
             r = await _client.post(
-                "/invoice/sign-invoice",
+                endpoints.INVOICE_SIGN,
                 json=invoice_dict,
                 headers={
                     "Authorization": f"Bearer {tok}",
@@ -608,7 +609,7 @@ async def create_invoice_log(
         _assert_client()
         try:
             r = await _client.post(
-                "/invoice-log",
+                endpoints.INVOICE_LOG,
                 json=payload,
                 headers={"Authorization": f"Bearer {tok}"},
             )
@@ -628,7 +629,7 @@ async def search_products(
     session_id: Optional[str] = None,
 ) -> list:
     resp = await _get(
-        "/lookup/products",
+        endpoints.LOOKUP_PRODUCTS,
         token,
         session_id=session_id,
         params={"search": search, "length": length},
@@ -644,147 +645,10 @@ async def search_services(
     session_id: Optional[str] = None,
 ) -> list:
     resp = await _get(
-        "/lookup/services",
+        endpoints.LOOKUP_SERVICES,
         token,
         session_id=session_id,
         params={"search": search, "length": length},
     )
     data = resp.json()
     return data if isinstance(data, list) else []
-
-
-# ---------------------------------------------------------------------------
-# Items & Services catalog
-# ---------------------------------------------------------------------------
-
-
-async def list_items(
-    token: str,
-    session_id: Optional[str] = None,
-    search: Optional[str] = None,
-    kind: Optional[str] = None,
-    offset: int = 0,
-    limit: int = 50,
-) -> dict:
-    params: dict = {"offset": offset, "limit": limit}
-    if search:
-        params["search"] = search
-    if kind in ("product", "service"):
-        params["kind"] = kind
-    resp = await _get("/items", token, session_id=session_id, params=params)
-    return resp.json()
-
-
-async def get_item(
-    token: str, item_id: int, session_id: Optional[str] = None
-) -> dict:
-    resp = await _get(f"/items/{item_id}", token, session_id=session_id)
-    return resp.json()
-
-
-async def create_item(
-    token: str, payload: dict, session_id: Optional[str] = None
-) -> dict:
-    async def _call(tok):
-        _assert_client()
-        try:
-            r = await _client.post(
-                "/items",
-                json=payload,
-                headers={"Authorization": f"Bearer {tok}"},
-            )
-        except httpx.RequestError as e:
-            logging.exception("create_item transport error")
-            raise TransportError(e)
-        _check(r)
-        return r.json()
-
-    return await _exec_with_refresh(_call, token, session_id)
-
-
-async def update_item(
-    token: str,
-    item_id: int,
-    payload: dict,
-    session_id: Optional[str] = None,
-) -> dict:
-    async def _call(tok):
-        _assert_client()
-        try:
-            r = await _client.patch(
-                f"/items/{item_id}",
-                json=payload,
-                headers={"Authorization": f"Bearer {tok}"},
-            )
-        except httpx.RequestError as e:
-            logging.exception("update_item transport error")
-            raise TransportError(e)
-        _check(r)
-        return r.json()
-
-    return await _exec_with_refresh(_call, token, session_id)
-
-
-async def delete_item(
-    token: str, item_id: int, session_id: Optional[str] = None
-) -> None:
-    async def _call(tok):
-        _assert_client()
-        try:
-            r = await _client.delete(
-                f"/items/{item_id}",
-                headers={"Authorization": f"Bearer {tok}"},
-            )
-        except httpx.RequestError as e:
-            logging.exception("delete_item transport error")
-            raise TransportError(e)
-        _check(r)
-
-    return await _exec_with_refresh(_call, token, session_id)
-
-
-async def bulk_delete_items(
-    token: str, ids: list[int], session_id: Optional[str] = None
-) -> dict:
-    async def _call(tok):
-        _assert_client()
-        try:
-            r = await _client.post(
-                "/items/bulk-delete",
-                json={"ids": ids},
-                headers={"Authorization": f"Bearer {tok}"},
-            )
-        except httpx.RequestError as e:
-            logging.exception("bulk_delete_items transport error")
-            raise TransportError(e)
-        _check(r)
-        return r.json()
-
-    return await _exec_with_refresh(_call, token, session_id)
-
-
-async def import_items(
-    token: str,
-    filename: str,
-    content: bytes,
-    content_type: str = "application/octet-stream",
-    session_id: Optional[str] = None,
-) -> dict:
-    async def _call(tok):
-        _assert_client()
-        try:
-            r = await _client.post(
-                "/items/import",
-                files={"file": (filename, content, content_type)},
-                headers={"Authorization": f"Bearer {tok}"},
-                timeout=httpx.Timeout(
-                    connect=15.0, read=120.0, write=60.0, pool=15.0
-                ),
-            )
-        except httpx.RequestError as e:
-            logging.exception("import_items transport error")
-            raise TransportError(e)
-        _check(r)
-        return r.json()
-
-    return await _exec_with_refresh(_call, token, session_id)

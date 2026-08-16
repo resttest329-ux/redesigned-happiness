@@ -4,6 +4,7 @@ from typing import Annotated
 from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, Depends, status
 from fastapi.security import OAuth2PasswordRequestForm
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from utils import schema
 from utils.models import User, SessionState
@@ -15,6 +16,7 @@ from auth import (
 )
 from deps import get_db, get_current_user_obj
 from config import settings
+from rate_limiter import auth_rate_limiter
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +45,23 @@ def register_user(user: schema.UserCreate, db: Session = Depends(get_db)):
             detail="Email already exists",
         )
 
+    db.execute(
+        text("SELECT pg_advisory_xact_lock(:id)"),
+        {"id": hash(user.business_id)},
+    )
+
+    existing_tenant = db.query(User).filter(
+        User.business_id == user.business_id
+    ).first()
+    if existing_tenant:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "This business is already registered. "
+                "To join an existing business, contact your administrator."
+            ),
+        )
+
     _validate_pki_field(user.certificate, "Certificate")
     _validate_pki_field(user.public_key, "Public key")
 
@@ -66,16 +85,28 @@ def login_for_access_token(
     form_data: Annotated[OAuth2PasswordRequestForm, Depends()],
     db: Session = Depends(get_db),
 ):
-    logger.info(f"Login attempt for: {form_data.username}")
-    user = (
-        db.query(User).filter(User.email == form_data.username.lower()).first()
-    )
+    email_lower = form_data.username.lower()
+    logger.info(f"Login attempt for: {email_lower}")
+
+    blocked, remaining = auth_rate_limiter.is_blocked(email_lower)
+    if blocked:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Too many login attempts. Try again in {remaining} seconds.",
+            headers={"Retry-After": str(remaining)},
+        )
+
+    user = db.query(User).filter(User.email == email_lower).first()
     if not user or not verify_password(
         form_data.password, user.hashed_password
     ):
+        lockout = auth_rate_limiter.record_failure(email_lower)
+        detail = "Incorrect email or password"
+        if lockout > 0:
+            detail += f". Account temporarily locked. Try again in {lockout} seconds."
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
+            detail=detail,
             headers={"WWW-Authenticate": "Bearer"},
         )
     if not user.is_active:
@@ -92,6 +123,7 @@ def login_for_access_token(
         data={"sub": str(user.id)}, expires_delta=access_token_expires
     )
     logger.info(f"Login successful for user id={user.id}")
+    auth_rate_limiter.reset(email_lower)
     return schema.Token(access_token=access_token, token_type="bearer")
 
 

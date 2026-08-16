@@ -1,6 +1,6 @@
 import logging
 from typing import Annotated, Optional
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from utils import schema
@@ -19,7 +19,7 @@ def list_customers(
     db: Session = Depends(get_db),
     search: Optional[str] = None,
     offset: int = 0,
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=500),
 ):
     user = get_current_user_obj(token, db)
     query = db.query(Customer).filter(Customer.business_id == user.business_id)

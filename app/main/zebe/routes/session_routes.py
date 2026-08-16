@@ -40,6 +40,8 @@ def _authorize_session_owner(
     session: SessionState, token: str, db: DBSession
 ) -> None:
     current_user = get_current_user_obj(token, db)
+    if session.business_id != current_user.business_id:
+        raise HTTPException(status_code=403, detail="Forbidden")
     if session.user_id is not None and session.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Forbidden")
     if session.user_id is None:
@@ -48,22 +50,26 @@ def _authorize_session_owner(
 
 
 @router.post("")
-def create_session(data: schema.SessionCreate, db: DBSession = Depends(get_db)):
+def create_session(
+    token: Annotated[str, Depends(oauth2_scheme)],
+    db: DBSession = Depends(get_db),
+):
+    current_user = get_current_user_obj(token, db)
     session_id = secrets.token_urlsafe(32)
     expires_at = (datetime.now(timezone.utc) + timedelta(hours=8)).isoformat()
     session = SessionState(
         session_id=session_id,
-        jwt_token=data.jwt_token,
-        user_secret=data.user_secret,
-        username=data.username,
-        business_id=data.business_id,
-        user_id=data.user_id,
+        jwt_token=token,
+        user_secret="",
+        username=current_user.username,
+        business_id=current_user.business_id,
+        user_id=current_user.id,
         expires_at=expires_at,
     )
     db.add(session)
     db.commit()
     db.refresh(session)
-    logger.info("Session created for user_id=%s", data.user_id)
+    logger.info("Session created for user_id=%s", current_user.id)
     return {"session_id": session_id}
 
 

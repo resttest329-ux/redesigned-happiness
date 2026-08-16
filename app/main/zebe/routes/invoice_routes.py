@@ -8,6 +8,7 @@ from utils.models import InvoiceLog
 from utils.utility import get_request_app, patch_request, post_request
 from auth import verify_password, oauth2_scheme
 from deps import get_db, get_current_user_obj
+from rate_limiter import invoice_throttle
 from services.invoice_service import (
     compute_totals,
     build_invoice_schema,
@@ -82,6 +83,17 @@ def _assert_local_invoice_owner(irn: str, user, db: Session) -> InvoiceLog:
     return log
 
 
+def _assert_invoice_rate_limit(user) -> None:
+    tenant_id = user.business_id
+    allowed, info = invoice_throttle.is_allowed(tenant_id)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Invoice operation rate limit exceeded. Try again later.",
+            headers={"Retry-After": str(info)},
+        )
+
+
 @router.post("/validate-invoice")
 async def validate_invoice(
     data: schema.InvoiceSchema,
@@ -143,6 +155,7 @@ async def sign_invoice(
 ):
     logger.info(f"Sign invoice called for IRN: {data.irn}")
     user = get_current_user_obj(token, db)
+    _assert_invoice_rate_limit(user)
     endpoint: str = "/api/v1/einvoice/sign"
     if not headers.user_secret or not user.user_secret:
         raise HTTPException(
@@ -208,6 +221,7 @@ async def transmit_invoice(
 ):
     logger.info(f"Transmit invoice called for IRN: {irn}")
     user = get_current_user_obj(token, db)
+    _assert_invoice_rate_limit(user)
     _assert_local_invoice_owner(irn, user, db)
     endpoint: str = f"/api/v1/einvoice/transmit/{irn}"
     try:
@@ -275,6 +289,18 @@ async def get_invoice(
     db: Session = Depends(get_db),
 ):
     user = get_current_user_obj(token, db)
+
+    cross_tenant = (
+        db.query(InvoiceLog)
+        .filter(
+            InvoiceLog.irn == irn,
+            InvoiceLog.business_id != user.business_id,
+        )
+        .first()
+    )
+    if cross_tenant:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
     endpoint: str = f"/api/v1/einvoice/{irn}"
     try:
         response = await get_request_app(endpoint=endpoint)
@@ -378,6 +404,7 @@ def assemble_invoice(
     db: Session = Depends(get_db),
 ):
     user = get_current_user_obj(token, db)
+    _assert_invoice_rate_limit(user)
     wizard = body.wizard or {}
 
     structural_errors = validate_wizard(wizard)

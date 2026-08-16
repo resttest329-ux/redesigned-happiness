@@ -1,6 +1,6 @@
 import logging
 from typing import Annotated, Optional
-from fastapi import APIRouter, HTTPException, Depends, status
+from fastapi import APIRouter, HTTPException, Depends, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func, case
 from utils import schema
@@ -85,7 +85,7 @@ def get_invoice_log_stats(
 def list_invoice_log(
     token: Annotated[str, Depends(oauth2_scheme)],
     db: Session = Depends(get_db),
-    limit: int = 20,
+    limit: int = Query(20, ge=1, le=500),
     offset: int = 0,
     order: str = "desc",
     search: Optional[str] = None,

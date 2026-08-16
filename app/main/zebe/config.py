@@ -13,9 +13,12 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_IN_MINUTES: int = 480
     API_KEY: Optional[str] = None
     CLIENT_SECRET: Optional[str] = None
-    FRONTEND_URL: Optional[str] = "http://127.0.0.1:5000"
+    ENVIRONMENT: str = "development"
+    FRONTEND_URL: Optional[str] = "http://[IP_ADDRESS]:5000"
     BASE_URL: str = "https://eivc-k6z6d.ondigitalocean.app"
     PASCA_BASE_URL: str = "https://test-api.pasca.co"
+    DOCS_USERNAME: Optional[str] = None
+    DOCS_PASSWORD: Optional[str] = None
 
 
 settings = Settings()

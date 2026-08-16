@@ -8,6 +8,7 @@ from typing import Optional
 import httpx
 
 from config import BACKEND_URL
+import endpoints
 
 logger = logging.getLogger(__name__)
 
@@ -48,19 +49,11 @@ def _iso_to_dt(iso: str) -> datetime:
     return datetime.fromisoformat(iso)
 
 
-def create_session(
-    jwt: str,
-    business_id: str,
-    username: str,
-    user_secret: Optional[str] = None,
-    user_id: Optional[int] = None,
-) -> str:
-    body = {"jwt_token": jwt, "business_id": business_id, "username": username}
-    if user_secret is not None:
-        body["user_secret"] = user_secret
-    if user_id is not None:
-        body["user_id"] = user_id
-    resp = _client().post("/sessions", json=body)
+def create_session(jwt: str) -> str:
+    resp = _client().post(
+        endpoints.SESSIONS,
+        headers={"Authorization": f"Bearer {jwt}"},
+    )
     resp.raise_for_status()
     return resp.json()["session_id"]
 
@@ -70,7 +63,7 @@ def get_session(session_id: str) -> Optional[dict]:
     if session_id in cache:
         return cache[session_id]
     try:
-        resp = _client().get(f"/sessions/{session_id}")
+        resp = _client().get(endpoints.SESSIONS_BY_ID.format(session_id=session_id))
     except httpx.RequestError:
         logging.exception("get_session transport error")
         cache[session_id] = None
@@ -109,7 +102,7 @@ def clear_session(session_id: str) -> None:
         return
     try:
         resp = _client().delete(
-            f"/sessions/{session_id}",
+            endpoints.SESSIONS_BY_ID.format(session_id=session_id),
             headers=_auth_headers(session_id),
         )
         if resp.status_code not in (200, 204, 401, 403, 404):
@@ -170,7 +163,7 @@ def _auth_headers(session_id: str) -> dict:
 def save_user_secret(session_id: str, secret: str) -> None:
     try:
         resp = _client().patch(
-            f"/sessions/{session_id}/secret",
+            endpoints.SESSIONS_SECRET.format(session_id=session_id),
             json={"user_secret": secret},
             headers=_auth_headers(session_id),
         )
@@ -186,7 +179,7 @@ def save_user_secret(session_id: str, secret: str) -> None:
 def save_wizard_json(session_id: str, wizard_json_str: str) -> None:
     try:
         resp = _client().patch(
-            f"/sessions/{session_id}/wizard",
+            endpoints.SESSIONS_WIZARD.format(session_id=session_id),
             json={"wizard_json": wizard_json_str},
             headers=_auth_headers(session_id),
         )
@@ -204,7 +197,7 @@ def save_wizard_json(session_id: str, wizard_json_str: str) -> None:
 def clear_wizard_json(session_id: str) -> None:
     try:
         resp = _client().delete(
-            f"/sessions/{session_id}/wizard",
+            endpoints.SESSIONS_WIZARD.format(session_id=session_id),
             headers=_auth_headers(session_id),
         )
         if resp.status_code not in (200, 204, 401, 403, 404):

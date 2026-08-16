@@ -128,20 +128,7 @@ def register_routes(rt) -> None:
             )
 
         try:
-            me = await api_client.get_me(jwt)
-        except Exception:
-            logging.exception("login get_me failed")
-            return RedirectResponse(
-                "/login?error=Could+not+fetch+user+profile", status_code=303
-            )
-
-        try:
-            sid = auth_service.create_session(
-                jwt=jwt,
-                business_id=me.get("business_id", ""),
-                username=me.get("username", email),
-                user_id=me.get("id"),
-            )
+            sid = auth_service.create_session(jwt=jwt)
         except Exception:
             logging.exception("login create_session failed")
             return RedirectResponse(
