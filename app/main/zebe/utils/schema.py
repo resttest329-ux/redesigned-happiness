@@ -11,7 +11,11 @@ from pydantic import (
 from typing import Optional
 from datetime import datetime
 
-from services.unit_codes import DEFAULT_UNIT_CODE, validate_unit_code
+from services.invoice_service import (
+    DEFAULT_UNIT_CODE,
+    TAX_CURRENCY_CODE,
+    validate_unit_code,
+)
 
 
 TIN_PATTERN = re.compile(r"^\d{8}-\d{4}$")
@@ -235,6 +239,22 @@ class InvoiceLine(BaseModel):
 
 
 class InvoiceSchema(BaseModel):
+    """Outbound FIRS/PASCA invoice payload.
+
+    Serialization contract: routes send
+    ``model_dump(exclude_none=True, by_alias=True)``. Every field's external
+    name is its snake_case field name — including the tax currency, which the
+    live PASCA sandbox only accepts as ``tax_currency_code`` (the camelCase
+    ``taxCurrencyCode`` spelling was rejected with
+    ``invoicerequest.invoice.taxcurrencycode is required`` even when present).
+    No field on this model declares an alias, so ``by_alias=True`` is a no-op
+    kept for consistency across the outbound serialization helpers.
+    ``populate_by_name`` keeps the Python-side snake_case ergonomics when
+    constructing the model.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
     irn: str
     business_id: str
     #: Derived from the customer identity (B2B when a customer TIN exists).
@@ -248,7 +268,10 @@ class InvoiceSchema(BaseModel):
     payment_status: Optional[str] = PaymentStatus.PENDING.value
     invoice_type_code: str
     document_currency_code: str
-    tax_currency_code: Optional[str] = None
+    #: Required by PASCA on every invoice (``invoice.taxcurrencycode``) and
+    #: sent snake_case on the wire as ``tax_currency_code``. Derived — never a
+    #: user input.
+    tax_currency_code: str = TAX_CURRENCY_CODE
     billing_reference: Optional[list[BillingReference]] = None
     payment_means: Optional[list[PaymentMeansItem]] = None
 
@@ -258,6 +281,12 @@ class InvoiceSchema(BaseModel):
     tax_total: list[TaxTotal]
     legal_monetary_total: LegalMonetaryTotal
     invoice_line: list[InvoiceLine]
+
+    @field_validator("tax_currency_code", mode="before")
+    @classmethod
+    def _validate_tax_currency_code(cls, v):
+        raw = str(v or "").strip().upper()
+        return raw or TAX_CURRENCY_CODE
 
     @field_validator("invoice_kind", mode="before")
     @classmethod

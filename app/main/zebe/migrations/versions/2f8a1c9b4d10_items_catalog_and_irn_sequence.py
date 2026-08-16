@@ -34,7 +34,7 @@ def upgrade() -> None:
         sa.Column("isic_category", sa.String(), nullable=True),
         sa.Column("unit_price", sa.Float(), nullable=False),
         sa.Column(
-            "price_unit", sa.String(), nullable=False, server_default="C62"
+            "price_unit", sa.String(), nullable=False, server_default="EA"
         ),
         sa.Column(
             "base_quantity", sa.Float(), nullable=False, server_default="1"

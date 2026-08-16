@@ -949,7 +949,8 @@ def _line_form_modal() -> rx.Component:
                                     "price_unit",
                                     "Price unit",
                                     WizardState.line_form["price_unit"],
-                                    "NGN per 1",
+                                    "EA",
+                                    helper="Official UN/ECE unit code (EA = each, KGM = kilogram).",
                                 ),
                                 _input(
                                     "discount_rate",

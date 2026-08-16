@@ -74,13 +74,17 @@ def _empty_line() -> WizardLine:
         "service_category": "",
         "invoiced_quantity": 1.0,
         "price_amount": 0.0,
-        "price_unit": "NGN per 1",
+        "price_unit": "EA",
         "base_quantity": 1.0,
         "discount_rate": 0.0,
         "discount_amount": 0.0,
         "fee_rate": 0.0,
         "fee_amount": 0.0,
     }
+
+
+#: Official default unit code (UN/ECE "each"). FIRS rejects free text.
+DEFAULT_UNIT_CODE = "EA"
 
 
 class WizardState(rx.State):
@@ -141,7 +145,7 @@ class WizardState(rx.State):
         "service_category": "",
         "invoiced_quantity": 1.0,
         "price_amount": 0.0,
-        "price_unit": "NGN per 1",
+        "price_unit": "EA",
         "base_quantity": 1.0,
         "discount_rate": 0.0,
         "discount_amount": 0.0,
@@ -1111,8 +1115,9 @@ class WizardState(rx.State):
             "service_category": self.line_form.get("service_category", ""),
             "invoiced_quantity": qty,
             "price_amount": price,
-            "price_unit": form_data.get("price_unit", "NGN per 1")
-            or "NGN per 1",
+            "price_unit": (form_data.get("price_unit", "") or DEFAULT_UNIT_CODE)
+            .strip()
+            .upper(),
             "base_quantity": base_qty,
             "discount_rate": disc_rate,
             "discount_amount": disc_amt,

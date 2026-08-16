@@ -2,22 +2,315 @@ import io
 import re
 import base64
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
 import qrcode
 
-from services.unit_codes import (
-    DEFAULT_UNIT_CODE,
-    coerce_unit_code,
-    normalize_unit_code,
-    sorted_unit_codes,
-)
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from utils.models import InvoiceLog, IRNSequence
 
 TAX_RATE = 0.075
-#: FIRS requires an official 2-3 character UN/ECE unit code, never free text.
+
+#: FIRS/NRS always reports VAT in Naira, whatever the document currency is.
+#: PASCA requires it on every invoice and expects it camelCased on the wire
+#: (``taxCurrencyCode``) — see :class:`utils.schema.InvoiceSchema`.
+TAX_CURRENCY_CODE = "NGN"
+
+
+# ---------------------------------------------------------------------------
+# Official unit codes (UN/ECE Recommendation 20 subset accepted by FIRS)
+# ---------------------------------------------------------------------------
+#: FIRS requires the invoice line ``price.price_unit`` to be a short official
+#: 2-3 character UN/ECE code, never free text. There is deliberately **no**
+#: legacy alias table: unmappable input falls back to :data:`DEFAULT_UNIT_CODE`
+#: on the assembly path and is rejected outright by the request schemas.
+UNIT_CODES: dict[str, str] = {
+    "EA": "Each",
+    "KGM": "Kilogram",
+    "MTR": "Metre",
+    "LTR": "Litre",
+    "MTK": "Square metre",
+    "MTQ": "Cubic metre",
+    "HUR": "Hour",
+    "DAY": "Day",
+    "BOX": "Box",
+    "BAG": "Bag",
+    "BTL": "Bottle",
+    "CTN": "Carton",
+    "SET": "Set",
+}
+
+VALID_UNIT_CODES: frozenset[str] = frozenset(UNIT_CODES)
+
+#: The single official default unit code ("each").
+DEFAULT_UNIT_CODE = "EA"
+
+#: Readability alias used by the invoice assembly path.
 DEFAULT_PRICE_UNIT = DEFAULT_UNIT_CODE
+
+_UNIT_CODE_RE = re.compile(r"^[A-Z0-9]{2,3}$")
+_PREFERRED_UNIT_ORDER = ["EA", "KGM", "LTR", "MTR", "HUR", "DAY"]
+
+
+def sorted_unit_codes() -> list[str]:
+    """Codes in a stable order (common first), for options and messages."""
+    rest = sorted(c for c in VALID_UNIT_CODES if c not in _PREFERRED_UNIT_ORDER)
+    return [c for c in _PREFERRED_UNIT_ORDER if c in VALID_UNIT_CODES] + rest
+
+
+def unit_code_options() -> list[dict[str, str]]:
+    """Lookup-friendly ``[{"code": ..., "name": ...}]`` payload."""
+    return [
+        {"code": code, "name": UNIT_CODES[code]} for code in sorted_unit_codes()
+    ]
+
+
+def unit_code_label(code: object) -> str:
+    return UNIT_CODES.get(str(code or "").strip().upper(), "")
+
+
+def normalize_unit_code(value: object) -> str | None:
+    """Return the official code for ``value``, or ``None`` when invalid."""
+    if value is None:
+        return None
+    raw = " ".join(str(value).strip().upper().split())
+    if not raw:
+        return None
+    if raw in VALID_UNIT_CODES:
+        return raw
+    compact = raw.replace(" ", "")
+    if compact in VALID_UNIT_CODES:
+        return compact
+    return None
+
+
+def is_valid_unit_code(value: object) -> bool:
+    raw = "" if value is None else str(value).strip().upper()
+    return bool(_UNIT_CODE_RE.match(raw)) and raw in VALID_UNIT_CODES
+
+
+def coerce_unit_code(value: object, default: str = DEFAULT_UNIT_CODE) -> str:
+    """Best-effort normalization used on assembly paths (never raises)."""
+    return normalize_unit_code(value) or default
+
+
+def validate_unit_code(value: object) -> str:
+    """Strict normalization used by request schemas.
+
+    Raises:
+        ValueError: when the value is not an official unit code.
+    """
+    code = normalize_unit_code(value)
+    if code is None:
+        raise ValueError(
+            "price_unit must be an official 2-3 character unit code "
+            f"(one of: {', '.join(sorted_unit_codes())})."
+        )
+    return code
+
+
+# ---------------------------------------------------------------------------
+# IRN generation / reservation
+# ---------------------------------------------------------------------------
+#: The FIRS IRN pattern is ``INV{sequence}-{ServiceID}-{YYYYMMDD}``. The
+#: sequence is owned by the server: persisted per (business_id, date_segment)
+#: in ``irn_sequence``, floored by the highest sequence already present in
+#: ``invoice_log``, and advanced past any local collision.
+IRN_MIN_SEQUENCE = 3180
+IRN_MAX_LENGTH = 50
+MAX_COLLISION_PROBES = 500
+
+IRN_RE = re.compile(r"^INV(\d+)-([A-Z0-9]{1,12})-(\d{8})$")
+
+
+class IRNError(ValueError):
+    """Raised for malformed input while building or reserving an IRN."""
+
+
+def normalize_service_segment(service_id: str | None) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]", "", service_id or "")
+    return cleaned.upper()[:12] or "SERVICE0"
+
+
+def date_segment_for(issue_date: str | None) -> str:
+    """Convert an ``YYYY-MM-DD`` issue date to the IRN ``YYYYMMDD`` segment."""
+    raw = (issue_date or "").strip()
+    if not raw:
+        raise IRNError("issue_date is required to build an IRN.")
+    for fmt in ("%Y-%m-%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y%m%d")
+        except ValueError:
+            continue
+    raise IRNError("issue_date must be a valid YYYY-MM-DD date.")
+
+
+def parse_irn(irn: str | None) -> tuple[int, str, str] | None:
+    """Return ``(sequence, service_segment, date_segment)`` or ``None``."""
+    if not irn:
+        return None
+    m = IRN_RE.match(str(irn).strip().upper())
+    if not m:
+        return None
+    try:
+        sequence = int(m.group(1))
+    except ValueError:
+        return None
+    return sequence, m.group(2), m.group(3)
+
+
+def build_irn(sequence: int, service_segment: str, date_segment: str) -> str:
+    irn = f"INV{sequence}-{service_segment}-{date_segment}"
+    if len(irn) > IRN_MAX_LENGTH:
+        raise IRNError(f"Generated IRN exceeds {IRN_MAX_LENGTH} characters.")
+    return irn
+
+
+def irn_matches_issue_date(irn: str | None, issue_date: str | None) -> bool:
+    parsed = parse_irn(irn)
+    if not parsed:
+        return False
+    try:
+        return parsed[2] == date_segment_for(issue_date)
+    except IRNError:
+        logger.exception("irn_matches_issue_date: bad issue_date")
+        return False
+
+
+def _max_logged_sequence(db: Session, business_id: str) -> int:
+    """Highest ``INV{n}`` sequence already recorded for this business."""
+    highest = 0
+    try:
+        rows = (
+            db.query(InvoiceLog.irn)
+            .filter(InvoiceLog.business_id == business_id)
+            .all()
+        )
+    except Exception:
+        logger.exception("_max_logged_sequence: invoice log scan failed")
+        return 0
+    for (irn,) in rows:
+        parsed = parse_irn(irn)
+        if parsed and parsed[0] > highest:
+            highest = parsed[0]
+    return highest
+
+
+def _taken_irns(db: Session, business_id: str, date_segment: str) -> set[str]:
+    try:
+        rows = (
+            db.query(InvoiceLog.irn)
+            .filter(
+                InvoiceLog.business_id == business_id,
+                InvoiceLog.irn.like(f"%-{date_segment}"),
+            )
+            .all()
+        )
+    except Exception:
+        logger.exception("_taken_irns: invoice log scan failed")
+        return set()
+    return {(irn or "").strip().upper() for (irn,) in rows}
+
+
+def _irn_sequence_row(
+    db: Session, business_id: str, date_segment: str
+) -> IRNSequence | None:
+    return (
+        db.query(IRNSequence)
+        .filter(
+            IRNSequence.business_id == business_id,
+            IRNSequence.date_segment == date_segment,
+        )
+        .first()
+    )
+
+
+def peek_next_irn(
+    db: Session,
+    *,
+    business_id: str,
+    service_id: str | None,
+    issue_date: str,
+    minimum: int = 0,
+) -> tuple[str, int]:
+    """Compute the next IRN without persisting the reservation."""
+    date_segment = date_segment_for(issue_date)
+    service_segment = normalize_service_segment(service_id)
+    row = _irn_sequence_row(db, business_id, date_segment)
+    floor = max(
+        IRN_MIN_SEQUENCE - 1,
+        row.last_sequence if row else 0,
+        _max_logged_sequence(db, business_id),
+        int(minimum or 0),
+    )
+    taken = _taken_irns(db, business_id, date_segment)
+    candidate = floor + 1
+    for _ in range(MAX_COLLISION_PROBES):
+        irn = build_irn(candidate, service_segment, date_segment)
+        if irn not in taken:
+            return irn, candidate
+        candidate += 1
+    raise IRNError(
+        "Could not find a free IRN sequence for today — please contact support."
+    )
+
+
+def reserve_next_irn(
+    db: Session,
+    *,
+    business_id: str,
+    service_id: str | None,
+    issue_date: str,
+    minimum: int = 0,
+) -> tuple[str, int]:
+    """Reserve and persist the next IRN sequence for a business/day."""
+    date_segment = date_segment_for(issue_date)
+    irn, sequence = peek_next_irn(
+        db,
+        business_id=business_id,
+        service_id=service_id,
+        issue_date=issue_date,
+        minimum=minimum,
+    )
+    now = datetime.now(timezone.utc)
+    row = _irn_sequence_row(db, business_id, date_segment)
+    if row is None:
+        row = IRNSequence(
+            business_id=business_id,
+            date_segment=date_segment,
+            last_sequence=sequence,
+            updated_at=now,
+        )
+        db.add(row)
+        try:
+            db.commit()
+        except IntegrityError:
+            logger.exception("reserve_next_irn: concurrent insert, retrying")
+            db.rollback()
+            return reserve_next_irn(
+                db,
+                business_id=business_id,
+                service_id=service_id,
+                issue_date=issue_date,
+                minimum=sequence,
+            )
+    else:
+        if sequence > row.last_sequence:
+            row.last_sequence = sequence
+        row.updated_at = now
+        db.commit()
+    logger.info(
+        "Reserved IRN sequence %s for business=***%s date=%s",
+        sequence,
+        (business_id or "")[-4:],
+        date_segment,
+    )
+    return irn, sequence
+
 
 #: NRS `invoice_kind` values. Derived, never asked for.
 INVOICE_KIND_B2B = "B2B"
@@ -48,6 +341,11 @@ def derive_invoice_kind(wizard: dict) -> str:
         return INVOICE_KIND_B2B
     tin = str(wizard.get("customer_tin") or "").strip()
     return INVOICE_KIND_B2B if tin else INVOICE_KIND_B2C
+
+
+def derive_tax_currency_code(wizard: dict | None = None) -> str:
+    """Derive the NRS ``taxCurrencyCode``. Always NGN, never user input."""
+    return TAX_CURRENCY_CODE
 
 
 def derive_tax_point_date(issue_date) -> str | None:
@@ -223,6 +521,9 @@ def build_invoice_schema(wizard: dict, business_id: str) -> dict:
         "tax_point_date": derive_tax_point_date(get("issue_date")),
         "payment_status": INITIAL_PAYMENT_STATUS,
         "document_currency_code": get("document_currency_code"),
+        # PASCA requires the tax currency on every invoice; it is derived, not
+        # collected, and is serialized as ``taxCurrencyCode``.
+        "tax_currency_code": derive_tax_currency_code(wizard),
         "payment_means": [
             {
                 "payment_means_code": get("payment_means_code"),
@@ -238,8 +539,6 @@ def build_invoice_schema(wizard: dict, business_id: str) -> dict:
         "invoice_line": invoice_lines,
     }
 
-    if get("tax_currency_code"):
-        result["tax_currency_code"] = get("tax_currency_code")
     br_irn = get("billing_reference_irn")
     br_date = get("billing_reference_issue_date")
     if br_irn and br_date:

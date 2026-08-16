@@ -10,17 +10,15 @@ from auth import verify_password, oauth2_scheme
 from deps import get_db, get_current_user_obj
 from rate_limiter import invoice_throttle
 from services.invoice_service import (
-    compute_totals,
-    build_invoice_schema,
-    generate_qr_b64,
-    validate_wizard,
-    validate_totals_consistency,
-)
-from services.irn_service import (
     IRNError,
+    build_invoice_schema,
+    compute_totals,
     date_segment_for,
+    generate_qr_b64,
     parse_irn,
     reserve_next_irn,
+    validate_totals_consistency,
+    validate_wizard,
 )
 
 SUPPLIER_PROFILE_FIELDS = (
@@ -50,6 +48,74 @@ _NOT_ENABLED_DETAIL = (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/invoice", tags=["Invoice"])
+
+#: Field names that MUST appear (snake_case) in every outbound invoice payload.
+#: The live PASCA sandbox rejects an invoice with
+#: ``invoicerequest.invoice.taxcurrencycode is required`` when the tax currency
+#: is sent camelCased as ``taxCurrencyCode`` — only the snake_case
+#: ``tax_currency_code`` key is accepted. These required wire fields are
+#: asserted centrally instead of at each call site.
+REQUIRED_OUTBOUND_FIELDS: tuple[str, ...] = ("tax_currency_code",)
+
+#: Wire names that must NEVER leak onto an outbound payload.
+FORBIDDEN_OUTBOUND_FIELDS: tuple[str, ...] = ("taxCurrencyCode",)
+
+_ALIAS_BUG_DETAIL = (
+    "Internal serialization error while preparing the invoice for FIRS. "
+    "Please retry; if this persists contact support."
+)
+
+
+def _assert_outbound_fields(payload: dict, *, operation: str) -> None:
+    """Fail loudly if an outbound payload lost a required wire field.
+
+    This is the guardrail that makes it impossible for validate / sign /
+    update to drop ``tax_currency_code`` or to reintroduce the camelCase
+    spelling the sandbox rejects.
+    """
+    missing = [f for f in REQUIRED_OUTBOUND_FIELDS if f not in payload]
+    leaked = [f for f in FORBIDDEN_OUTBOUND_FIELDS if f in payload]
+    if missing or leaked:
+        logger.error(
+            "outbound %s payload field failure (missing=%s leaked=%s)",
+            operation,
+            missing,
+            leaked,
+        )
+        raise HTTPException(status_code=500, detail=_ALIAS_BUG_DETAIL)
+
+
+def _outbound_invoice_payload(
+    data: schema.InvoiceSchema, *, operation: str
+) -> dict:
+    """Serialize an invoice for PASCA/FIRS/NRS with wire names enforced.
+
+    Every external invoice payload (validate, sign, and anything added later)
+    MUST go through this helper. It always uses
+    ``model_dump(exclude_none=True, by_alias=True, mode="json")`` and then
+    verifies the required wire fields (notably the snake_case
+    ``tax_currency_code``) really are present in the dict handed to
+    ``post_request`` — and that the rejected camelCase spelling is absent.
+    """
+    payload = data.model_dump(exclude_none=True, by_alias=True, mode="json")
+    _assert_outbound_fields(payload, operation=operation)
+    return payload
+
+
+def _outbound_update_payload(
+    data: schema.UpdateInvoiceSchema, *, operation: str
+) -> dict:
+    """Serialize a payment-status update for PASCA with wire names enforced."""
+    payload = data.model_dump(exclude_none=True, by_alias=True, mode="json")
+    leaked = [f for f in FORBIDDEN_OUTBOUND_FIELDS if f in payload]
+    if leaked:
+        logger.error(
+            "outbound %s payload leaked forbidden fields: %s",
+            operation,
+            leaked,
+        )
+        raise HTTPException(status_code=500, detail=_ALIAS_BUG_DETAIL)
+    return payload
 
 
 @router.post("/validate-irn")
@@ -175,7 +241,8 @@ async def validate_invoice(
     endpoint: str = "/api/v1/einvoice/validate"
     try:
         response = await post_request(
-            endpoint=endpoint, payload=data.model_dump(exclude_none=True)
+            endpoint=endpoint,
+            payload=_outbound_invoice_payload(data, operation="validate"),
         )
     except httpx.HTTPStatusError as e:
         status = e.response.status_code
@@ -238,7 +305,7 @@ async def sign_invoice(
         )
     try:
         signing_payload = {
-            **data.model_dump(exclude_none=True),
+            **_outbound_invoice_payload(data, operation="sign"),
             "certificate": user.certificate,
             "public_key": user.public_key,
         }
@@ -404,7 +471,7 @@ async def update_invoice(
     endpoint: str = f"/api/v1/einvoice/update/{irn}"
     user = get_current_user_obj(token, db)
     _assert_local_invoice_owner(irn, user, db)
-    payload = data.model_dump(exclude_none=True, mode="json")
+    payload = _outbound_update_payload(data, operation="update-status")
     if not headers.user_secret or not user.user_secret:
         raise HTTPException(
             status_code=403, detail="User secret not configured"

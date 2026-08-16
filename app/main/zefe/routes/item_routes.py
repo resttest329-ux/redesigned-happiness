@@ -162,7 +162,7 @@ def _unit_select(value: str = DEFAULT_UNIT_CODE) -> Div:
         ),
         guidance_text(
             "Official 2–3 character UN/ECE unit code sent to FIRS "
-            "(C62 = one / each). Free text is not accepted."
+            "(EA = each). Free text is not accepted."
         ),
         cls="mb-4",
     )
@@ -1979,7 +1979,7 @@ def register_routes(rt) -> None:
                 guidance_text(
                     "Rows matching an existing SKU are updated; invalid rows "
                     "are skipped with a reason and never abort the import. "
-                    "Legacy unit values are normalized to official codes."
+                    "Price units must be official codes such as EA or KGM."
                 ),
                 cls="mb-2",
             ),

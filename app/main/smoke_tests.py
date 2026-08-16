@@ -27,6 +27,7 @@ from __future__ import annotations
 import ast
 import inspect
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -99,26 +100,80 @@ class _SubsystemPath:
 
 
 # --------------------------------------------------------------------------
+# Isolated environment for every zebe import path
+# --------------------------------------------------------------------------
+#
+# ``utils.database`` builds the SQLAlchemy engine at *import* time, so any zebe
+# import made before DATABASE_URL is pointed at SQLite would try to load the
+# psycopg2 driver (and fail in this sandbox). Every check that touches zebe must
+# therefore call :func:`_configure_zebe_env` first — including the derived
+# invoice-field checks, which import ``services.invoice_service`` and, through
+# it, ``utils.models``.
+
+_ISOLATED_DB_PATH: str | None = None
+
+
+def _configure_zebe_env() -> str:
+    """Point zebe at an isolated SQLite DB and stub required settings.
+
+    Any non-SQLite DATABASE_URL inherited from the environment is deliberately
+    overridden: these smoke checks must never depend on psycopg2 or on a real
+    Postgres instance being reachable.
+    """
+    global _ISOLATED_DB_PATH
+
+    os.environ.setdefault(
+        "JWT_SECRET_KEY",
+        "smoke-test-secret-key-must-be-at-least-32-bytes-long",
+    )
+    os.environ.setdefault("API_KEY", "smoke-test-api-key")
+    os.environ.setdefault("CLIENT_SECRET", "smoke-test-client-secret")
+
+    current = os.environ.get("DATABASE_URL", "")
+    if _ISOLATED_DB_PATH is not None:
+        # Re-assert in case something reset the variable between checks.
+        os.environ["DATABASE_URL"] = f"sqlite:///{_ISOLATED_DB_PATH}"
+        return _ISOLATED_DB_PATH
+
+    prefix = "sqlite:///"
+    if current.startswith(prefix):
+        _ISOLATED_DB_PATH = current[len(prefix) :]
+        return _ISOLATED_DB_PATH
+
+    _ISOLATED_DB_PATH = tempfile.NamedTemporaryFile(
+        prefix="zebe_smoke_", suffix=".db", delete=False
+    ).name
+    os.environ["DATABASE_URL"] = f"sqlite:///{_ISOLATED_DB_PATH}"
+    return _ISOLATED_DB_PATH
+
+
+def _cleanup_isolated_db() -> None:
+    global _ISOLATED_DB_PATH
+    if not _ISOLATED_DB_PATH:
+        return
+    try:
+        Path(_ISOLATED_DB_PATH).unlink(missing_ok=True)
+    except OSError:
+        logging.exception("Unexpected error")
+        logger = logging.getLogger("smoke_tests")
+        logger.warning("could not remove temp SQLite DB %s", _ISOLATED_DB_PATH)
+    _ISOLATED_DB_PATH = None
+
+
+# --------------------------------------------------------------------------
 # 1. zebe: item API round trip
 # --------------------------------------------------------------------------
 
 
 def check_zebe_item_flow() -> None:
     print("[zebe] item API round-trip…", flush=True)
-    os.environ.setdefault(
-        "JWT_SECRET_KEY",
-        "smoke-test-secret-key-must-be-at-least-32-bytes-long",
-    )
-    tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False).name
-    os.environ.setdefault("DATABASE_URL", f"sqlite:///{tmp_db}")
-    os.environ.setdefault("API_KEY", "smoke-test-api-key")
-    os.environ.setdefault("CLIENT_SECRET", "smoke-test-client-secret")
+    _configure_zebe_env()
 
     with _SubsystemPath(ZEBE, sibling=ZEFE):
-        _run_zebe_item_flow(tmp_db)
+        _run_zebe_item_flow()
 
 
-def _run_zebe_item_flow(tmp_db: str) -> None:
+def _run_zebe_item_flow() -> None:
     from utils.database import Base, engine, SessionLocal
     from utils.models import User
     from auth import hash_password, create_access_token
@@ -156,15 +211,43 @@ def _run_zebe_item_flow(tmp_db: str) -> None:
                 isic_code="7020",
                 isic_category="Management consultancy",
                 unit_price=1500,
-                price_unit="NGN per 1",
+                price_unit="EA",
             ),
             token=token,
             db=db,
         )
         assert created.sku == "SVC-001", "Item SKU not persisted"
         assert created.price_unit == "EA", (
-            "legacy free-text price_unit was not normalized to the official "
-            f"default unit code EA (got {created.price_unit!r})"
+            "price_unit must persist as the official unit code EA "
+            f"(got {created.price_unit!r})"
+        )
+
+        # Legacy free-text unit values were never deployed and are now
+        # rejected outright by the request schemas. This is the expected
+        # outcome, so it must be asserted quietly — no traceback logging.
+        from pydantic import ValidationError as _PydanticValidationError
+
+        legacy_rejected = ""
+        try:
+            ItemCreate(
+                sku="LEGACY-001",
+                name="Legacy unit item",
+                isic_code="7020",
+                isic_category="Management consultancy",
+                unit_price=100,
+                price_unit="NGN per 1",
+            )
+        except _PydanticValidationError as exc:
+            logging.exception("Unexpected error")
+            legacy_rejected = str(exc)
+        if not legacy_rejected:
+            raise AssertionError(
+                "legacy free-text price_unit ('NGN per 1') must now be "
+                "rejected — only official unit codes are accepted"
+            )
+        assert "price_unit" in legacy_rejected, (
+            "the rejection message should name the offending price_unit field "
+            f"(got: {legacy_rejected})"
         )
 
         page = list_items(
@@ -182,7 +265,7 @@ def _run_zebe_item_flow(tmp_db: str) -> None:
                 isic_code="7020",
                 isic_category="Management consultancy",
                 unit_price=2000,
-                price_unit="NGN per 1",
+                price_unit="EA",
             ),
             token=token,
             db=db,
@@ -199,7 +282,7 @@ def _run_zebe_item_flow(tmp_db: str) -> None:
                 "isic_code": "",
                 "isic_category": "",
                 "unit_price": "42000",
-                "price_unit": "NGN per 1",
+                "price_unit": "KGM",
             },
             {
                 "sku": "BAD-001",
@@ -210,13 +293,38 @@ def _run_zebe_item_flow(tmp_db: str) -> None:
                 "isic_code": "7020",
                 "isic_category": "Consulting",
                 "unit_price": "100",
+                "price_unit": "EA",
+            },
+            {
+                # Intentionally bad row: legacy free-text unit must be
+                # skipped with a reason rather than silently coerced.
+                "sku": "LEGACY-IMPORT-001",
+                "name": "Legacy unit import row",
+                "description": "",
+                "hsn_code": "",
+                "hsn_category": "",
+                "isic_code": "7020",
+                "isic_category": "Management consultancy",
+                "unit_price": "100",
                 "price_unit": "NGN per 1",
             },
         ]
         result = _process_import_rows(rows, db=db, business_id=user.business_id)
         assert result.created == 1, f"expected 1 create, got {result.created}"
-        assert result.skipped == 1 and result.errors, (
-            "bad row should have been skipped with an error"
+        assert result.skipped == 2, (
+            "both intentionally bad rows should have been skipped "
+            f"(got skipped={result.skipped})"
+        )
+        assert len(result.errors) == 2, (
+            "each skipped row must be reported back to the user with a reason"
+        )
+        error_blob = " | ".join(result.errors)
+        assert "BAD-001" in error_blob and "LEGACY-IMPORT-001" in error_blob, (
+            f"skipped rows should be identifiable: {error_blob}"
+        )
+        assert "price_unit" in error_blob, (
+            "the legacy free-text unit row must be reported as a price_unit "
+            f"problem: {error_blob}"
         )
 
         prods = list_items(
@@ -240,23 +348,27 @@ def _run_zebe_item_flow(tmp_db: str) -> None:
         _run_zebe_unit_and_irn_checks(db, user)
     finally:
         db.close()
-        try:
-            os.unlink(tmp_db)
-        except OSError:
-            logging.exception("Unexpected error")
     print("  ✓ item API create / search / update / import / bulk-delete OK")
 
 
 def _run_zebe_unit_and_irn_checks(db, user) -> None:
-    """Unit-code compliance + server-side IRN reservation guardrails."""
-    from services.unit_codes import (
+    """Unit-code compliance + server-side IRN reservation guardrails.
+
+    Both concerns now live in ``services.invoice_service`` — the standalone
+    ``irn_service`` module is gone and ``services.unit_codes`` is only a
+    re-export shim, so this check imports the consolidated module directly.
+    """
+    from services.invoice_service import (
+        DEFAULT_PRICE_UNIT,
         DEFAULT_UNIT_CODE,
         VALID_UNIT_CODES,
         coerce_unit_code,
         normalize_unit_code,
+        parse_irn,
+        reserve_next_irn,
+        unit_code_label,
+        unit_code_options,
     )
-    from services.invoice_service import DEFAULT_PRICE_UNIT
-    from services.irn_service import parse_irn, reserve_next_irn
 
     assert DEFAULT_UNIT_CODE == "EA", (
         "the official user-facing default unit code should be EA (each)"
@@ -264,14 +376,35 @@ def _run_zebe_unit_and_irn_checks(db, user) -> None:
     assert DEFAULT_PRICE_UNIT == DEFAULT_UNIT_CODE, (
         "invoice assembly still defaults to a non-compliant price unit"
     )
-    assert coerce_unit_code("NGN per 1") == "EA"
-    assert coerce_unit_code("each") == "EA"
-    assert coerce_unit_code("kg") == "KGM"
-    assert coerce_unit_code("") == "EA"
-    # Legacy C62 rows must keep validating rather than being rejected.
-    assert "C62" in VALID_UNIT_CODES
-    assert normalize_unit_code("C62") == "C62"
+    # Only official codes are accepted; legacy free text and the legacy C62
+    # code were removed now that nothing is deployed against them.
+    assert normalize_unit_code("EA") == "EA"
+    assert normalize_unit_code("kgm") == "KGM"
+    assert normalize_unit_code("NGN per 1") is None
+    assert normalize_unit_code("each") is None
+    assert normalize_unit_code("kg") is None
     assert normalize_unit_code("banana") is None
+    assert "C62" not in VALID_UNIT_CODES, (
+        "the legacy C62 unit code must no longer be offered or accepted"
+    )
+    assert normalize_unit_code("C62") is None
+    # coerce_* never raises: unmappable input becomes the official default.
+    assert coerce_unit_code("NGN per 1") == "EA"
+    assert coerce_unit_code("") == "EA"
+    assert unit_code_label("EA") == "Each"
+    codes = [row["code"] for row in unit_code_options()]
+    assert codes and codes[0] == "EA" and "C62" not in codes
+
+    # The standalone unit-code module is now only a re-export shim; anything
+    # still importing it must observe the consolidated implementation.
+    from services import unit_codes as unit_codes_shim
+
+    assert unit_codes_shim.coerce_unit_code is coerce_unit_code, (
+        "services.unit_codes must re-export the invoice_service helpers, "
+        "not define its own copy"
+    )
+    assert unit_codes_shim.DEFAULT_UNIT_CODE == DEFAULT_UNIT_CODE
+    assert unit_codes_shim.VALID_UNIT_CODES == VALID_UNIT_CODES
     print("  ✓ official unit-code constants and normalization OK")
 
     irn1, seq1 = reserve_next_irn(
@@ -411,12 +544,9 @@ def check_zebe_derived_invoice_fields() -> None:
     business_id must pass through byte-exact (lowercase UUID).
     """
     print("[zebe] derived NRS invoice fields…", flush=True)
-    os.environ.setdefault(
-        "JWT_SECRET_KEY",
-        "smoke-test-secret-key-must-be-at-least-32-bytes-long",
-    )
-    os.environ.setdefault("API_KEY", "smoke-test-api-key")
-    os.environ.setdefault("CLIENT_SECRET", "smoke-test-client-secret")
+    # Must run BEFORE the zebe import below: services.invoice_service pulls in
+    # utils.models -> utils.database, which builds the engine at import time.
+    _configure_zebe_env()
     with _SubsystemPath(ZEBE, sibling=ZEFE):
         _run_zebe_derived_field_checks()
     print("  ✓ invoice_kind / tax_point_date / payment_status derivation OK")
@@ -459,7 +589,7 @@ def _wizard_fixture() -> dict:
                     "service_category": "Management consultancy",
                     "invoiced_quantity": 2,
                     "price_amount": 1000,
-                    "price_unit": "NGN per 1",
+                    "price_unit": "EA",
                     "base_quantity": 1,
                 }
             ]
@@ -504,10 +634,14 @@ def _run_zebe_derived_field_checks() -> None:
     assert payload["business_id"] == business_id, (
         "business_id must be passed through byte-exact (lowercase UUID)"
     )
+    assert payload["tax_currency_code"] == "NGN", (
+        "tax_currency_code must always be derived (PASCA requires it on every "
+        "invoice, under this exact snake_case name) and reported in Naira"
+    )
 
     line = payload["invoice_line"][0]
     assert line["price"]["price_unit"] == "EA", (
-        "legacy free-text price_unit was not normalized to EA on assembly"
+        "assembled invoice line must carry the official unit code EA"
     )
     assert abs(line["line_extension_amount"] - 2000.0) < 0.01
     totals = payload["legal_monetary_total"]
@@ -527,6 +661,228 @@ def _run_zebe_derived_field_checks() -> None:
     assert model.payment_status == "PENDING"
     assert model.tax_point_date == "2026-03-01"
     assert model.business_id == business_id
+    assert model.tax_currency_code == "NGN"
+
+    _assert_external_field_names(model)
+
+
+def _assert_external_field_names(model) -> None:
+    """Guard the exact external field names sent to PASCA/FIRS/NRS.
+
+    The live sandbox rejected an invoice with
+    ``invoicerequest.invoice.taxcurrencycode is required`` while the payload
+    carried the camelCase ``taxCurrencyCode`` key, so the tax currency must
+    always be present under the snake_case name ``tax_currency_code`` and the
+    camelCase spelling must never be emitted. Every field keeps its snake_case
+    wire name.
+    """
+    dumped = model.model_dump(exclude_none=True, by_alias=True)
+
+    assert "tax_currency_code" in dumped, (
+        "outbound payload must include tax_currency_code (PASCA requirement)"
+    )
+    assert dumped["tax_currency_code"] == "NGN"
+    assert "taxCurrencyCode" not in dumped, (
+        "the camelCase tax currency key is rejected by the sandbox and must "
+        "never be serialized"
+    )
+
+    for key in (
+        "irn",
+        "business_id",
+        "invoice_kind",
+        "issue_date",
+        "tax_point_date",
+        "tax_currency_code",
+        "payment_status",
+        "invoice_type_code",
+        "document_currency_code",
+        "payment_means",
+        "accounting_supplier_party",
+        "accounting_customer_party",
+        "tax_total",
+        "legal_monetary_total",
+        "invoice_line",
+    ):
+        assert key in dumped, f"outbound payload lost required field: {key}"
+
+    party = dumped["accounting_supplier_party"]
+    assert "postal_address" in party and "party_name" in party
+    line = dumped["invoice_line"][0]
+    assert "line_extension_amount" in line and "invoiced_quantity" in line
+    assert line["price"]["price_unit"] == "EA"
+    assert "payable_amount" in dumped["legal_monetary_total"]
+    print("  ✓ external field names / snake_case tax_currency_code OK")
+
+
+def check_zebe_outbound_serialization() -> None:
+    """Every outbound InvoiceSchema dump must stay consistently serialized.
+
+    The PASCA sandbox requires ``tax_currency_code`` on every invoice and
+    rejects the camelCase spelling, so all outbound dumps go through the same
+    ``model_dump(exclude_none=True, by_alias=True, mode="json")`` call shape
+    and the field guardrail helper. Guard the serialization arguments in the
+    invoice routes so that regression cannot silently return.
+    """
+    print("[zebe] outbound InvoiceSchema serialization…", flush=True)
+    _purge_shared_modules()
+    text = (Path(ZEBE) / "routes" / "invoice_routes.py").read_text()
+
+    dumps = [
+        args
+        for args in re.findall(r"model_dump\(([^)]*)\)", text, re.DOTALL)
+        if "exclude_none" in args
+    ]
+    assert dumps, (
+        "no outbound model_dump(exclude_none=...) call found in invoice routes"
+    )
+    for args in dumps:
+        flattened = " ".join(args.split())
+        assert "by_alias=True" in flattened, (
+            "outbound payloads must be serialized consistently with "
+            f"by_alias=True (offending call args: {flattened})"
+        )
+
+    for marker in (
+        "/api/v1/einvoice/validate",
+        "/api/v1/einvoice/sign",
+        "certificate",
+        "public_key",
+        "_outbound_invoice_payload",
+        "_assert_outbound_fields",
+    ):
+        assert marker in text, f"invoice route lost required wiring: {marker}"
+
+    print("  ✓ validate / sign / update payloads keep snake_case wire names")
+
+
+def check_zebe_outbound_route_behavior() -> None:
+    """Guard the *routes'* actual behavior, not just the schema.
+
+    The live sandbox rejected ``validate_invoice`` payloads that carried the
+    camelCase ``taxCurrencyCode`` key. This check asserts, against the real
+    route source and the real serialization helper:
+
+      * ``validate_invoice`` / ``sign_invoice`` build their outbound payload via
+        ``_outbound_invoice_payload`` and never call ``model_dump`` inline;
+      * the helper's output — i.e. the dict that is handed to ``post_request``
+        — actually contains ``tax_currency_code`` and never leaks
+        ``taxCurrencyCode``;
+      * the helper refuses (500s) if the required field is ever missing.
+
+    No external request is made: only the local serialization path is run.
+    """
+    print("[zebe] validate/sign outbound payload behavior…", flush=True)
+    _configure_zebe_env()
+    with _SubsystemPath(ZEBE, sibling=ZEFE):
+        _run_zebe_outbound_route_checks()
+    print("  ✓ validate / sign post tax_currency_code via the field helper")
+
+
+def _assert_route_uses_alias_helper(fn, name: str) -> None:
+    src = inspect.getsource(fn)
+    assert "_outbound_invoice_payload(" in src, (
+        f"{name} must build its outbound payload with "
+        "_outbound_invoice_payload() so aliases can never be omitted"
+    )
+    assert "model_dump(" not in src, (
+        f"{name} must not call model_dump() inline — the outbound wire-field "
+        "guardrail must always run"
+    )
+    assert "post_request(" in src, (
+        f"{name} no longer posts to the external endpoint"
+    )
+
+
+def _run_zebe_outbound_route_checks() -> None:
+    from fastapi import HTTPException
+
+    from routes import invoice_routes as ir
+    from services.invoice_service import build_invoice_schema, compute_totals
+    from utils.schema import InvoiceSchema, UpdateInvoiceSchema
+
+    _assert_route_uses_alias_helper(ir.validate_invoice, "validate_invoice")
+    _assert_route_uses_alias_helper(ir.sign_invoice, "sign_invoice")
+
+    update_src = inspect.getsource(ir.update_invoice)
+    assert "_outbound_update_payload(" in update_src, (
+        "update_invoice must serialize through _outbound_update_payload()"
+    )
+    assert "model_dump(" not in update_src, (
+        "update_invoice must not call model_dump() inline"
+    )
+
+    assert "tax_currency_code" in ir.REQUIRED_OUTBOUND_FIELDS, (
+        "tax_currency_code must be an enforced outbound wire field"
+    )
+    assert "taxCurrencyCode" in ir.FORBIDDEN_OUTBOUND_FIELDS, (
+        "the camelCase tax currency name must never reach the wire"
+    )
+
+    business_id = "1c6eaf77-d0bd-455c-9c5c-500a3f1dbfb2"
+    wizard = _wizard_fixture()
+    wizard["computed"] = compute_totals(wizard["step3"]["lines"])
+    model = InvoiceSchema(**build_invoice_schema(wizard, business_id))
+
+    for operation in ("validate", "sign"):
+        payload = ir._outbound_invoice_payload(model, operation=operation)
+        assert "tax_currency_code" in payload, (
+            f"the {operation} payload passed to post_request must include "
+            "tax_currency_code"
+        )
+        assert payload["tax_currency_code"] == "NGN"
+        assert "taxCurrencyCode" not in payload, (
+            f"the {operation} payload leaked the camelCase tax currency name"
+        )
+        for key in ("irn", "business_id", "invoice_line", "payment_status"):
+            assert key in payload, (
+                f"the {operation} payload lost required field {key}"
+            )
+
+    # The signing route posts the invoice payload plus the credentials; make
+    # sure merging them cannot drop the alias.
+    signing_payload = {
+        **ir._outbound_invoice_payload(model, operation="sign"),
+        "certificate": "cert",
+        "public_key": "key",
+    }
+    assert signing_payload["tax_currency_code"] == "NGN"
+    assert signing_payload["certificate"] and signing_payload["public_key"]
+
+    # The guardrail must actually fire when the required field is missing.
+    missing_failure = ""
+    try:
+        ir._assert_outbound_fields({"irn": "X"}, operation="validate")
+    except HTTPException as exc:
+        logging.exception("Unexpected error")
+        missing_failure = str(exc.detail)
+    if not missing_failure:
+        raise AssertionError(
+            "_assert_outbound_fields must raise when tax_currency_code is "
+            "missing from an outbound payload"
+        )
+
+    leak_failure = ""
+    try:
+        ir._assert_outbound_fields(
+            {"tax_currency_code": "NGN", "taxCurrencyCode": "NGN"},
+            operation="validate",
+        )
+    except HTTPException as exc:
+        logging.exception("Unexpected error")
+        leak_failure = str(exc.detail)
+    if not leak_failure:
+        raise AssertionError(
+            "_assert_outbound_fields must raise when the camelCase tax "
+            "currency field leaks into an outbound payload"
+        )
+
+    update_payload = ir._outbound_update_payload(
+        UpdateInvoiceSchema(payment_status="PAID", reference="REF-1"),
+        operation="update-status",
+    )
+    assert update_payload["payment_status"] == "PAID"
+    assert "taxCurrencyCode" not in update_payload
 
 
 def check_wizard_onboarding_wiring() -> None:
@@ -583,6 +939,8 @@ def main() -> int:
         check_zefe_zebe_contract,
         check_wizard_onboarding_wiring,
         check_zefe_derived_fields_readonly,
+        check_zebe_outbound_serialization,
+        check_zebe_outbound_route_behavior,
         check_zebe_derived_invoice_fields,
         check_zebe_item_flow,
     ]
@@ -595,12 +953,13 @@ def main() -> int:
             failed += 1
             print(f"  ✗ {check.__name__}: {e}", file=sys.stderr)
         except Exception as e:  # pragma: no cover - defensive
-            logging.exception("Unexpected error")
+            logging.exception("unexpected error in %s", check.__name__)
             failed += 1
             print(
                 f"  ✗ {check.__name__}: unexpected error: {e!r}",
                 file=sys.stderr,
             )
+    _cleanup_isolated_db()
     total = len(checks)
     if failed:
         print(f"\n{failed}/{total} smoke checks failed.", file=sys.stderr)
