@@ -29,6 +29,10 @@ def validate_tin(value: Optional[str]) -> Optional[str]:
     return value
 
 
+#: NRS `invoice_kind` values. Derived server-side, never a user input.
+VALID_INVOICE_KINDS = {"B2B", "B2C", "B2G"}
+
+
 class PaymentStatus(str, Enum):
     PENDING = "PENDING"
     PAID = "PAID"
@@ -140,7 +144,17 @@ class PostalAddress(BaseModel):
     postal_zone: str
     country: str
     state: str
-    lga: str = ""
+    #: Stored locally on the profile / customer record, but optional on the
+    #: wire — blanks are normalized away rather than sent as empty strings.
+    lga: Optional[str] = None
+
+    @field_validator("lga", mode="before")
+    @classmethod
+    def _blank_lga_to_none(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
 
 
 class AccountingParty(BaseModel):
@@ -223,9 +237,15 @@ class InvoiceLine(BaseModel):
 class InvoiceSchema(BaseModel):
     irn: str
     business_id: str
+    #: Derived from the customer identity (B2B when a customer TIN exists).
+    invoice_kind: str = "B2B"
     issue_date: str
     issue_time: Optional[str] = None
     due_date: Optional[str] = None
+    #: Derived from issue_date (Peppol BT-7 / NRS tax_point_date).
+    tax_point_date: Optional[str] = None
+    #: Always PENDING at creation; later transitions use the status endpoint.
+    payment_status: Optional[str] = PaymentStatus.PENDING.value
     invoice_type_code: str
     document_currency_code: str
     tax_currency_code: Optional[str] = None
@@ -238,6 +258,37 @@ class InvoiceSchema(BaseModel):
     tax_total: list[TaxTotal]
     legal_monetary_total: LegalMonetaryTotal
     invoice_line: list[InvoiceLine]
+
+    @field_validator("invoice_kind", mode="before")
+    @classmethod
+    def _validate_invoice_kind(cls, v):
+        raw = str(v or "").strip().upper() or "B2B"
+        if raw not in VALID_INVOICE_KINDS:
+            raise ValueError(
+                "invoice_kind must be one of: "
+                f"{', '.join(sorted(VALID_INVOICE_KINDS))}."
+            )
+        return raw
+
+    @field_validator("payment_status", mode="before")
+    @classmethod
+    def _validate_initial_payment_status(cls, v):
+        if v is None or str(v).strip() == "":
+            return PaymentStatus.PENDING.value
+        raw = str(v).strip().upper()
+        if raw not in {s.value for s in PaymentStatus}:
+            raise ValueError(
+                "payment_status must be one of: "
+                f"{', '.join(s.value for s in PaymentStatus)}."
+            )
+        return raw
+
+    @field_validator("business_id")
+    @classmethod
+    def _preserve_business_id(cls, v: str) -> str:
+        # business_id must be passed through byte-exact (FIRS templates are
+        # registered against the lowercase UUID) — only strip whitespace.
+        return (v or "").strip()
 
 
 class UpdateInvoiceSchema(BaseModel):

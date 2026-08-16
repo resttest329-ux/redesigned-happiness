@@ -123,7 +123,7 @@ class Item(Base):
     isic_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     isic_category: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     unit_price: Mapped[float] = mapped_column(default=0.0)
-    price_unit: Mapped[str] = mapped_column(String, default="C62")
+    price_unit: Mapped[str] = mapped_column(String, default="EA")
     base_quantity: Mapped[float] = mapped_column(default=1.0)
     is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(

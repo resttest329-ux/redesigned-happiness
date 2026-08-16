@@ -19,6 +19,14 @@ TAX_RATE = 0.075
 #: FIRS requires an official 2-3 character UN/ECE unit code, never free text.
 DEFAULT_PRICE_UNIT = DEFAULT_UNIT_CODE
 
+#: NRS `invoice_kind` values. Derived, never asked for.
+INVOICE_KIND_B2B = "B2B"
+INVOICE_KIND_B2C = "B2C"
+
+#: NRS `payment_status` on creation is always PENDING; later transitions go
+#: through the dedicated status-update endpoint, never through assembly.
+INITIAL_PAYMENT_STATUS = "PENDING"
+
 _IRN_RE = re.compile(r"^INV\d+-[A-Z0-9]{1,12}-(\d{8})$")
 _TIN_RE = re.compile(r"^\d{8}-\d{4}$")
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
@@ -27,6 +35,32 @@ _ISIC_RE = re.compile(r"^\d{4}$")
 
 AMENDMENT_INVOICE_TYPE_CODES = {"380", "384", "385"}
 _TOTAL_TOLERANCE = 0.01
+
+
+def derive_invoice_kind(wizard: dict) -> str:
+    """Derive the NRS ``invoice_kind`` from the customer identity.
+
+    A customer TIN means a business counterparty (``B2B``). ``B2C`` is only
+    ever produced if a no-TIN customer path exists — today every invoice
+    requires a customer TIN, so this is defensive rather than user-facing.
+    """
+    if not isinstance(wizard, dict):
+        return INVOICE_KIND_B2B
+    tin = str(wizard.get("customer_tin") or "").strip()
+    return INVOICE_KIND_B2B if tin else INVOICE_KIND_B2C
+
+
+def derive_tax_point_date(issue_date) -> str | None:
+    """Derive the NRS/Peppol ``tax_point_date`` (BT-7) from the issue date."""
+    raw = str(issue_date or "").strip()
+    if not raw:
+        return None
+    for fmt in ("%Y-%m-%d", "%Y%m%d"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
 
 
 def _safe_float(val, default=0.0):
@@ -71,34 +105,29 @@ def build_invoice_schema(wizard: dict, business_id: str) -> dict:
     def get(key, default=None):
         return wizard.get(key, default)
 
-    supplier = {
-        "tin": get("supplier_tin"),
-        "party_name": get("supplier_party_name"),
-        "email": get("supplier_email"),
-        "telephone": get("supplier_telephone"),
-        "postal_address": {
-            "street_name": get("supplier_street_name"),
-            "city_name": get("supplier_city_name"),
-            "postal_zone": get("supplier_postal_zone"),
-            "country": get("supplier_country"),
-            "state": get("supplier_state"),
-            "lga": get("supplier_lga") or "",
-        },
-    }
-    customer = {
-        "tin": get("customer_tin"),
-        "party_name": get("customer_party_name"),
-        "email": get("customer_email"),
-        "telephone": get("customer_telephone"),
-        "postal_address": {
-            "street_name": get("customer_street_name"),
-            "city_name": get("customer_city_name"),
-            "postal_zone": get("customer_postal_zone"),
-            "country": get("customer_country"),
-            "state": get("customer_state"),
-            "lga": get("customer_lga") or "",
-        },
-    }
+    def party(prefix: str) -> dict:
+        postal = {
+            "street_name": get(f"{prefix}_street_name"),
+            "city_name": get(f"{prefix}_city_name"),
+            "postal_zone": get(f"{prefix}_postal_zone"),
+            "country": get(f"{prefix}_country"),
+            "state": get(f"{prefix}_state"),
+        }
+        # LGA stays stored on the profile / customer record, but empty optional
+        # values are omitted from the outbound payload (NRS rejects blanks).
+        lga = str(get(f"{prefix}_lga") or "").strip()
+        if lga:
+            postal["lga"] = lga
+        return {
+            "tin": get(f"{prefix}_tin"),
+            "party_name": get(f"{prefix}_party_name"),
+            "email": get(f"{prefix}_email"),
+            "telephone": get(f"{prefix}_telephone"),
+            "postal_address": postal,
+        }
+
+    supplier = party("supplier")
+    customer = party("customer")
 
     invoice_lines = []
     lines = wizard.get("step3", {}).get("lines", [])
@@ -189,6 +218,10 @@ def build_invoice_schema(wizard: dict, business_id: str) -> dict:
         "issue_time": datetime.now().strftime("%H:%M:%S"),
         "due_date": get("due_date") or None,
         "invoice_type_code": get("invoice_type_code"),
+        # Derived NRS/PASCA fields — never collected from the user.
+        "invoice_kind": derive_invoice_kind(wizard),
+        "tax_point_date": derive_tax_point_date(get("issue_date")),
+        "payment_status": INITIAL_PAYMENT_STATUS,
         "document_currency_code": get("document_currency_code"),
         "payment_means": [
             {
@@ -215,9 +248,10 @@ def build_invoice_schema(wizard: dict, business_id: str) -> dict:
         ]
 
     logger.info(
-        "Invoice built [irn=%s bus=%s lines=%s amt=%s]",
+        "Invoice built [irn=%s bus=%s kind=%s lines=%s amt=%s]",
         result.get("irn", ""),
         (result.get("business_id") or "")[-4:],
+        result.get("invoice_kind", ""),
         len(result.get("invoice_line", [])),
         result.get("legal_monetary_total", {}).get("payable_amount", 0),
     )

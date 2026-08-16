@@ -5,6 +5,12 @@ line ``price.price_unit`` field to be a short 2-3 character UN/ECE code, NOT
 free text. Legacy Zetamind builds sent values like ``"NGN per 1"`` which the
 gateway rejects (or silently mangles), so every code path that produces a
 ``price_unit`` now funnels through :func:`coerce_unit_code`.
+
+The canonical default is ``EA`` ("each"), which is the code used throughout the
+NRS / Interswitch invoice examples for a plain countable unit. ``C62`` (the
+UN/ECE "one" code) remains a fully valid code so historical rows keep
+validating, but new lines and legacy free text (``"NGN per 1"``, ``"each"``,
+``"unit"``…) normalize to ``EA``.
 """
 
 from __future__ import annotations
@@ -13,8 +19,8 @@ import re
 
 # Canonical code -> human readable label.
 UNIT_CODES: dict[str, str] = {
-    "C62": "One (each / piece)",
     "EA": "Each",
+    "C62": "One (each / piece) — legacy",
     "KGM": "Kilogram",
     "MTR": "Metre",
     "LTR": "Litre",
@@ -31,30 +37,33 @@ UNIT_CODES: dict[str, str] = {
 
 VALID_UNIT_CODES: frozenset[str] = frozenset(UNIT_CODES)
 
-#: Default when nothing usable was supplied. ``C62`` == "one / each".
-DEFAULT_UNIT_CODE = "C62"
+#: Default when nothing usable was supplied. ``EA`` == "each" (NRS/PASCA usage).
+DEFAULT_UNIT_CODE = "EA"
+
+#: Retained purely so historical data / tests can reference the legacy default.
+LEGACY_DEFAULT_UNIT_CODE = "C62"
 
 _CODE_RE = re.compile(r"^[A-Z0-9]{2,3}$")
 
 #: Legacy free text (and common shorthand) mapped onto compliant codes.
 LEGACY_UNIT_ALIASES: dict[str, str] = {
     # legacy Zetamind defaults
-    "NGN PER 1": "C62",
-    "NGNPER1": "C62",
-    "NAIRA PER 1": "C62",
-    "NAIRA PER UNIT": "C62",
-    "PER UNIT": "C62",
-    "PER 1": "C62",
+    "NGN PER 1": "EA",
+    "NGNPER1": "EA",
+    "NAIRA PER 1": "EA",
+    "NAIRA PER UNIT": "EA",
+    "PER UNIT": "EA",
+    "PER 1": "EA",
     # each / piece
-    "EACH": "C62",
-    "UNIT": "C62",
-    "UNITS": "C62",
-    "PIECE": "C62",
-    "PIECES": "C62",
-    "PCS": "C62",
-    "PC": "C62",
-    "NO": "C62",
-    "ONE": "C62",
+    "EACH": "EA",
+    "UNIT": "EA",
+    "UNITS": "EA",
+    "PIECE": "EA",
+    "PIECES": "EA",
+    "PCS": "EA",
+    "PC": "EA",
+    "NO": "EA",
+    "ONE": "EA",
     # weight
     "KG": "KGM",
     "KGS": "KGM",
@@ -103,9 +112,15 @@ LEGACY_UNIT_ALIASES: dict[str, str] = {
 }
 
 
+#: Most commonly used codes first, then alphabetical, so option lists and error
+#: messages surface the compliant "each" code before the legacy alternatives.
+_PREFERRED_ORDER = ["EA", "C62", "KGM", "LTR", "MTR", "HUR", "DAY"]
+
+
 def sorted_unit_codes() -> list[str]:
     """Codes in a stable order, useful for error messages and lookups."""
-    return sorted(VALID_UNIT_CODES)
+    rest = sorted(c for c in VALID_UNIT_CODES if c not in _PREFERRED_ORDER)
+    return [c for c in _PREFERRED_ORDER if c in VALID_UNIT_CODES] + rest
 
 
 def unit_code_options() -> list[dict[str, str]]:

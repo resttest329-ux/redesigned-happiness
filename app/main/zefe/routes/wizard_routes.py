@@ -80,9 +80,97 @@ def _default_price_unit(wizard: dict) -> str:
     """Official default unit code for a new line (never free text).
 
     FIRS requires ``price_unit`` to be a 2-3 character UN/ECE code, so the
-    wizard always defaults to ``C62`` (one / each) regardless of currency.
+    wizard always defaults to ``EA`` (each) regardless of currency. Legacy
+    values such as ``C62`` or ``"NGN per 1"`` are normalized, never shown.
     """
     return DEFAULT_UNIT_CODE
+
+
+def _derived_invoice_kind(wizard: dict) -> str:
+    """Mirror of the backend derivation, for read-only display only."""
+    return "B2B" if str(wizard.get("customer_tin") or "").strip() else "B2C"
+
+
+def _derived_field_row(label: str, value: str, note: str) -> Div:
+    return Div(
+        Div(
+            P(
+                label,
+                cls=(
+                    "text-xs uppercase text-slate-500 font-semibold "
+                    "tracking-wider"
+                ),
+            ),
+            P(note, cls="text-[11px] text-slate-500 mt-0.5 leading-relaxed"),
+            cls="min-w-0 flex-1",
+        ),
+        Span(
+            value or "\u2014",
+            cls=(
+                "shrink-0 inline-flex items-center px-2.5 py-1 rounded-lg "
+                "text-xs font-semibold font-mono bg-slate-50 text-slate-900 "
+                "border border-slate-200"
+            ),
+        ),
+        cls=(
+            "flex items-start justify-between gap-4 py-2.5 "
+            "border-b border-slate-100 last:border-b-0"
+        ),
+    )
+
+
+def _derived_fields_card(wizard: dict) -> Div:
+    """Read-only summary of every field Zetamind derives for you.
+
+    None of these are editable anywhere in the wizard — the backend owns them
+    so the FIRS payload always stays internally consistent.
+    """
+    return card(
+        Div(
+            icon("check-circle", cls="h-4 w-4 text-indigo-600"),
+            Div(
+                H3(
+                    "Derived automatically",
+                    cls="text-base font-semibold text-slate-900",
+                ),
+                P(
+                    "Read-only — computed from what you already entered. "
+                    "No input needed.",
+                    cls="text-xs text-slate-500 mt-0.5",
+                ),
+                cls="min-w-0",
+            ),
+            cls="flex items-center gap-2 mb-3",
+        ),
+        Div(
+            _derived_field_row(
+                "Invoice kind",
+                _derived_invoice_kind(wizard),
+                "B2B because this customer has a TIN.",
+            ),
+            _derived_field_row(
+                "Tax point date",
+                wizard.get("issue_date", "") or "",
+                "Always matches the invoice issue date.",
+            ),
+            _derived_field_row(
+                "Tax currency",
+                "NGN",
+                "FIRS reports VAT in Naira regardless of invoice currency.",
+            ),
+            _derived_field_row(
+                "Initial payment status",
+                "PENDING",
+                "Set on creation; update it after the invoice is issued.",
+            ),
+            _derived_field_row(
+                "IRN",
+                wizard.get("irn", "") or "",
+                "Sequence, Service ID and date segment are generated for you.",
+            ),
+            cls="flex flex-col",
+        ),
+    )
 
 
 def _unit_select_field(value: str = DEFAULT_UNIT_CODE) -> Div:
@@ -122,7 +210,7 @@ def _unit_select_field(value: str = DEFAULT_UNIT_CODE) -> Div:
             cls="relative",
         ),
         guidance_text(
-            "Official 2–3 character UN/ECE unit code (C62 = one / each). "
+            "Official 2–3 character UN/ECE unit code (EA = each). "
             "FIRS rejects free text such as 'NGN per 1'."
         ),
         cls="mb-4",
@@ -2601,7 +2689,11 @@ def _render_step4(
         Div(
             summary,
             lifecycle_recap,
-            cls="grid grid-cols-1 md:grid-cols-2 gap-4 mb-5",
+            cls="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4",
+        ),
+        Div(
+            _derived_fields_card(wizard),
+            cls="mb-5",
         ),
         Div(
             Div(

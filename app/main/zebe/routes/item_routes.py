@@ -55,6 +55,46 @@ IMPORT_COLUMNS = list(ITEM_FIELDS)
 MAX_IMPORT_ROWS = 2000
 
 
+def _coerce_int(value, default: int) -> int:
+    """Normalize a paging value for direct Python calls.
+
+    Under FastAPI the declared ``Query(...)`` default is replaced by the parsed
+    request value, so this is a no-op. When a route is called directly from
+    Python (tests, internal helpers) the unresolved ``Query`` marker object can
+    leak through as the default — coerce it back to the documented default so
+    the query builder never receives a non-integer.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_str(value) -> str | None:
+    """Same intent as ``_coerce_int`` for optional string filters."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _coerce_bool(value, default: bool | None) -> bool | None:
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes"}:
+            return True
+        if lowered in {"false", "0", "no"}:
+            return False
+        return default
+    return default
+
+
 def _scoped(db: Session, business_id: str):
     return db.query(Item).filter(Item.business_id == business_id)
 
@@ -82,6 +122,7 @@ def _apply_payload(item: Item, data: dict) -> None:
 @router.get("", response_model=schema.ItemPage)
 def list_items(
     token: Annotated[str, Depends(oauth2_scheme)],
+    *,
     db: Session = Depends(get_db),
     search: Optional[str] = None,
     kind: Optional[str] = Query(None, pattern="^(product|service)$"),
@@ -90,6 +131,12 @@ def list_items(
     limit: int = Query(50, ge=1, le=500),
 ):
     user = get_current_user_obj(token, db)
+    search = _coerce_str(search)
+    kind = _coerce_str(kind)
+    kind = kind if kind in ("product", "service") else None
+    active = _coerce_bool(active, True)
+    offset = max(0, _coerce_int(offset, 0))
+    limit = min(500, max(1, _coerce_int(limit, 50)))
     query = _scoped(db, user.business_id)
 
     if active is not None:
@@ -281,9 +328,11 @@ def update_item(
 def delete_item(
     item_id: int,
     token: Annotated[str, Depends(oauth2_scheme)],
+    *,
     db: Session = Depends(get_db),
     hard: bool = False,
 ):
+    hard = bool(_coerce_bool(hard, False))
     user = get_current_user_obj(token, db)
     item = _get_owned(db, item_id, user.business_id)
     if hard:
@@ -418,8 +467,8 @@ def _process_import_rows(
             parsed = schema.ItemCreate(**payload_raw)
         except ValidationError as exc:
             # Expected for bad user data: a skipped row is a normal outcome of
-            # importing a spreadsheet, not a fault. Format the message and log
-            # it at info level WITHOUT exc_info so no traceback is emitted.
+            # importing a spreadsheet, not a fault. Record the reason for the
+            # user and move on — no traceback, no exception-level logging.
             logging.exception("Unexpected error")
             detail = _format_validation_error(exc)
             logger.info(
@@ -430,8 +479,15 @@ def _process_import_rows(
             skipped += 1
             errors.append(f"{_row_label(index, row)}: {detail}")
             continue
-        except Exception:
-            logger.exception("_process_import_rows: unexpected row failure")
+        except Exception as exc:
+            # Still a row-level outcome: skip it with a concise reason instead
+            # of emitting a traceback for the whole import.
+            logging.exception("Unexpected error")
+            logger.warning(
+                "import row skipped (unparseable): %s: %s",
+                _row_label(index, row),
+                exc,
+            )
             skipped += 1
             errors.append(f"{_row_label(index, row)}: could not be parsed")
             continue
@@ -451,15 +507,25 @@ def _process_import_rows(
                 db.commit()
                 created += 1
         except IntegrityError:
-            logger.exception("_process_import_rows: integrity error")
+            # Duplicate SKU is expected user data — roll back and skip the row.
+            logging.exception("Unexpected error")
             db.rollback()
+            logger.info(
+                "import row skipped (duplicate SKU): %s",
+                _row_label(index, row),
+            )
             skipped += 1
             errors.append(
                 f"{_row_label(index, row)}: duplicate SKU in this workspace"
             )
-        except Exception:
-            logger.exception("_process_import_rows: write failed")
+        except Exception as exc:
+            logging.exception("Unexpected error")
             db.rollback()
+            logger.warning(
+                "import row skipped (write failed): %s: %s",
+                _row_label(index, row),
+                exc,
+            )
             skipped += 1
             errors.append(f"{_row_label(index, row)}: could not be saved")
 

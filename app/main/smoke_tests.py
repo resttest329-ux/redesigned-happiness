@@ -162,9 +162,9 @@ def _run_zebe_item_flow(tmp_db: str) -> None:
             db=db,
         )
         assert created.sku == "SVC-001", "Item SKU not persisted"
-        assert created.price_unit == "C62", (
-            "legacy free-text price_unit was not normalized to an official "
-            f"unit code (got {created.price_unit!r})"
+        assert created.price_unit == "EA", (
+            "legacy free-text price_unit was not normalized to the official "
+            f"default unit code EA (got {created.price_unit!r})"
         )
 
         page = list_items(
@@ -251,19 +251,26 @@ def _run_zebe_unit_and_irn_checks(db, user) -> None:
     """Unit-code compliance + server-side IRN reservation guardrails."""
     from services.unit_codes import (
         DEFAULT_UNIT_CODE,
+        VALID_UNIT_CODES,
         coerce_unit_code,
         normalize_unit_code,
     )
     from services.invoice_service import DEFAULT_PRICE_UNIT
     from services.irn_service import parse_irn, reserve_next_irn
 
-    assert DEFAULT_UNIT_CODE == "C62"
+    assert DEFAULT_UNIT_CODE == "EA", (
+        "the official user-facing default unit code should be EA (each)"
+    )
     assert DEFAULT_PRICE_UNIT == DEFAULT_UNIT_CODE, (
         "invoice assembly still defaults to a non-compliant price unit"
     )
-    assert coerce_unit_code("NGN per 1") == "C62"
+    assert coerce_unit_code("NGN per 1") == "EA"
+    assert coerce_unit_code("each") == "EA"
     assert coerce_unit_code("kg") == "KGM"
-    assert coerce_unit_code("") == "C62"
+    assert coerce_unit_code("") == "EA"
+    # Legacy C62 rows must keep validating rather than being rejected.
+    assert "C62" in VALID_UNIT_CODES
+    assert normalize_unit_code("C62") == "C62"
     assert normalize_unit_code("banana") is None
     print("  ✓ official unit-code constants and normalization OK")
 
@@ -291,6 +298,7 @@ def _run_zebe_unit_and_irn_checks(db, user) -> None:
 # --------------------------------------------------------------------------
 
 ZEFE_MODULES = [
+    "services/unit_codes.py",
     "routes/auth_routes.py",
     "routes/customer_routes.py",
     "routes/dashboard_routes.py",
@@ -394,6 +402,133 @@ def _check_api_client_contract(api_client) -> list[str]:
 # --------------------------------------------------------------------------
 
 
+def check_zebe_derived_invoice_fields() -> None:
+    """Guard the NRS/PASCA-aligned derived fields on the assembled payload.
+
+    None of these may ever come from a manual user input: invoice_kind is
+    derived from the customer TIN, tax_point_date from issue_date, and the
+    initial payment_status is always PENDING. Monetary totals stay derived and
+    business_id must pass through byte-exact (lowercase UUID).
+    """
+    print("[zebe] derived NRS invoice fields…", flush=True)
+    os.environ.setdefault(
+        "JWT_SECRET_KEY",
+        "smoke-test-secret-key-must-be-at-least-32-bytes-long",
+    )
+    os.environ.setdefault("API_KEY", "smoke-test-api-key")
+    os.environ.setdefault("CLIENT_SECRET", "smoke-test-client-secret")
+    with _SubsystemPath(ZEBE, sibling=ZEFE):
+        _run_zebe_derived_field_checks()
+    print("  ✓ invoice_kind / tax_point_date / payment_status derivation OK")
+
+
+def _wizard_fixture() -> dict:
+    return {
+        "irn": "INV3180-SVCSMOKE-20260301",
+        "issue_date": "2026-03-01",
+        "due_date": "2026-03-15",
+        "invoice_type_code": "381",
+        "document_currency_code": "NGN",
+        "payment_means_code": "10",
+        "supplier_tin": "12345678-0001",
+        "supplier_party_name": "Supplier Ltd",
+        "supplier_email": "supplier@example.com",
+        "supplier_telephone": "+2348000000000",
+        "supplier_street_name": "Main Street",
+        "supplier_city_name": "Lagos",
+        "supplier_postal_zone": "100001",
+        "supplier_country": "NG",
+        "supplier_state": "Lagos",
+        "supplier_lga": "",
+        "customer_tin": "23456789-0001",
+        "customer_party_name": "Buyer Ltd",
+        "customer_email": "buyer@example.com",
+        "customer_telephone": "+2348111111111",
+        "customer_street_name": "Buyer Road",
+        "customer_city_name": "Abuja",
+        "customer_postal_zone": "900001",
+        "customer_country": "NG",
+        "customer_state": "FCT",
+        "customer_lga": "AMAC",
+        "step3": {
+            "lines": [
+                {
+                    "name": "Consulting",
+                    "description": "Consulting",
+                    "isic_code": "7020",
+                    "service_category": "Management consultancy",
+                    "invoiced_quantity": 2,
+                    "price_amount": 1000,
+                    "price_unit": "NGN per 1",
+                    "base_quantity": 1,
+                }
+            ]
+        },
+    }
+
+
+def _run_zebe_derived_field_checks() -> None:
+    from services.invoice_service import (
+        INITIAL_PAYMENT_STATUS,
+        build_invoice_schema,
+        compute_totals,
+        derive_invoice_kind,
+        derive_tax_point_date,
+        validate_wizard,
+    )
+    from utils.schema import InvoiceSchema
+
+    business_id = "1c6eaf77-d0bd-455c-9c5c-500a3f1dbfb2"
+    wizard = _wizard_fixture()
+
+    errors = validate_wizard(wizard)
+    assert not errors, f"fixture wizard should be valid, got: {errors}"
+
+    wizard["computed"] = compute_totals(wizard["step3"]["lines"])
+    payload = build_invoice_schema(wizard, business_id)
+
+    assert payload["invoice_kind"] == "B2B", (
+        "a customer with a TIN must derive invoice_kind=B2B"
+    )
+    assert derive_invoice_kind({"customer_tin": ""}) == "B2C", (
+        "a no-TIN customer path must derive invoice_kind=B2C"
+    )
+    assert payload["tax_point_date"] == wizard["issue_date"], (
+        "tax_point_date must be derived from issue_date"
+    )
+    assert derive_tax_point_date("20260301") == "2026-03-01"
+    assert derive_tax_point_date("") is None
+    assert payload["payment_status"] == INITIAL_PAYMENT_STATUS == "PENDING", (
+        "invoice creation must derive an initial PENDING payment status"
+    )
+    assert payload["business_id"] == business_id, (
+        "business_id must be passed through byte-exact (lowercase UUID)"
+    )
+
+    line = payload["invoice_line"][0]
+    assert line["price"]["price_unit"] == "EA", (
+        "legacy free-text price_unit was not normalized to EA on assembly"
+    )
+    assert abs(line["line_extension_amount"] - 2000.0) < 0.01
+    totals = payload["legal_monetary_total"]
+    assert abs(totals["tax_exclusive_amount"] - 2000.0) < 0.01
+    assert abs(totals["payable_amount"] - 2150.0) < 0.01, (
+        "monetary totals must be derived (2000 + 7.5% VAT)"
+    )
+
+    # Empty optional LGA must be omitted, populated LGA preserved.
+    assert "lga" not in payload["accounting_supplier_party"]["postal_address"]
+    assert (
+        payload["accounting_customer_party"]["postal_address"]["lga"] == "AMAC"
+    )
+
+    model = InvoiceSchema(**payload)
+    assert model.invoice_kind == "B2B"
+    assert model.payment_status == "PENDING"
+    assert model.tax_point_date == "2026-03-01"
+    assert model.business_id == business_id
+
+
 def check_wizard_onboarding_wiring() -> None:
     """Guard the new inline signing-secret setup flow so a future refactor
     doesn't silently drop the onboarding path."""
@@ -411,6 +546,32 @@ def check_wizard_onboarding_wiring() -> None:
     print("  ✓ signing-secret onboarding wiring is present")
 
 
+def check_zefe_derived_fields_readonly() -> None:
+    """The wizard must display derived fields read-only and never as inputs."""
+    print("[zefe] derived fields are read-only…", flush=True)
+    _purge_shared_modules()
+    text = (Path(ZEFE) / "routes" / "wizard_routes.py").read_text()
+    for marker in (
+        "_derived_fields_card",
+        "_derived_invoice_kind",
+        "Derived automatically",
+        "_irn_readonly_block",
+    ):
+        assert marker in text, f"missing derived-field marker: {marker}"
+    for forbidden in (
+        'name="invoice_kind"',
+        'name="tax_point_date"',
+        'name="tax_currency_code"',
+        'name="payment_status"',
+        'name="line_extension_amount"',
+        'name="payable_amount"',
+    ):
+        assert forbidden not in text, (
+            f"derived field is exposed as a wizard input: {forbidden}"
+        )
+    print("  ✓ no manual inputs for derived invoice fields")
+
+
 # --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
@@ -421,6 +582,8 @@ def main() -> int:
         check_zefe_syntax,
         check_zefe_zebe_contract,
         check_wizard_onboarding_wiring,
+        check_zefe_derived_fields_readonly,
+        check_zebe_derived_invoice_fields,
         check_zebe_item_flow,
     ]
     failed = 0
