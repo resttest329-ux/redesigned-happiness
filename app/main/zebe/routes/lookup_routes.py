@@ -8,6 +8,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from utils import schema
 from utils.utility import get_request, get_request_app
 from auth import oauth2_scheme
+from services.unit_codes import (
+    VALID_UNIT_CODES,
+    unit_code_options,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -381,6 +385,12 @@ async def get_services(
         return []
 
 
+@router.get("/unit-codes", response_model=list[schema.UnitCode])
+async def get_unit_codes(token: Annotated[str, Depends(oauth2_scheme)]):
+    """Official 2-3 character unit codes accepted on invoice lines."""
+    return unit_code_options()
+
+
 @router.get("/units-of-measurement")
 async def get_units_of_measurement(
     token: Annotated[str, Depends(oauth2_scheme)],
@@ -417,10 +427,15 @@ async def get_units_of_measurement(
                     or code
                 )
                 normalized.append({"code": code, "name": name})
-        return normalized
+        compliant = [
+            row
+            for row in normalized
+            if str(row.get("code", "")).strip().upper() in VALID_UNIT_CODES
+        ]
+        return compliant or unit_code_options()
     except Exception as e:
         logging.exception("Unexpected error")
-        logger.error(f"units-of-measurement lookup failed: {e}")
-        raise HTTPException(
-            status_code=502, detail="External lookup API unavailable"
+        logger.error(
+            f"units-of-measurement lookup failed: {e}; using official codes"
         )
+        return unit_code_options()

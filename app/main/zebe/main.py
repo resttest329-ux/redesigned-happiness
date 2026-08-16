@@ -21,6 +21,7 @@ from routes.customer_routes import router as customer_router
 from routes.invoice_log_routes import router as invoice_log_router
 from routes.session_routes import router as session_router
 from routes.invoice_routes import router as invoice_router
+from routes.item_routes import router as item_router
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -43,8 +44,12 @@ class DocsAuthMiddleware(BaseHTTPMiddleware):
             not settings.DOCS_USERNAME
             or not settings.DOCS_PASSWORD
             or credentials is None
-            or not secrets.compare_digest(credentials.username, settings.DOCS_USERNAME)
-            or not secrets.compare_digest(credentials.password, settings.DOCS_PASSWORD)
+            or not secrets.compare_digest(
+                credentials.username, settings.DOCS_USERNAME
+            )
+            or not secrets.compare_digest(
+                credentials.password, settings.DOCS_PASSWORD
+            )
         ):
             return JSONResponse(
                 status_code=401,
@@ -103,6 +108,7 @@ app.include_router(customer_router, prefix="/api")
 app.include_router(invoice_log_router, prefix="/api")
 app.include_router(session_router, prefix="/api")
 app.include_router(invoice_router, prefix="/api")
+app.include_router(item_router, prefix="/api")
 
 
 @app.get("/")

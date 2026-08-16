@@ -168,6 +168,7 @@ def _customer_form(
 
 from ui.components import (
     alert,
+    confirm_dialog,
     confirm_modal,
     country_state_fields,
     empty_state,
@@ -255,6 +256,7 @@ def _customer_row(c: dict) -> Tr:
 _CUSTOMERS_JS = """
 (function(){
   function selected(){return Array.from(document.querySelectorAll('.zefe-row-check:checked')).map(c=>c.value);}
+  window.zefeSelectedCustomerIds=function(){return selected().join(',');};
   function refresh(){
     var ids=selected();
     var bar=document.getElementById('zefe-bulk-bar');
@@ -310,32 +312,39 @@ def _customer_table(customers: list[dict]) -> Div:
 
 
 def _bulk_action_bar() -> Div:
-    return Form(
-        Div(
-            Span(
-                "0 selected",
-                id="zefe-bulk-count",
-                cls="text-sm font-semibold text-slate-700",
-            ),
-            Hidden(name="ids", value="", id="zefe-bulk-ids"),
-            Button(
-                icon("trash", cls="h-4 w-4"),
-                type="submit",
-                title="Delete selected customers",
-                aria_label="Delete selected customers",
-                hx_get="/customers/bulk-delete-confirm",
-                hx_target="#customer-modal-area",
-                hx_swap="innerHTML",
-                hx_include="#zefe-bulk-ids, [name='q'], [name='page']",
-                cls="inline-flex items-center justify-center p-2 bg-rose-600 text-white rounded-lg hover:bg-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-1 transition-colors shadow-xs",
-            ),
-            cls="flex items-center justify-between w-full",
+    """Selection bar. Selected IDs are read live from the DOM via hx-vals so a
+    stale hidden input can never submit an empty selection."""
+    return Div(
+        Span(
+            "0 selected",
+            id="zefe-bulk-count",
+            cls="text-sm font-semibold text-slate-700",
         ),
-        method="get",
-        action="/customers/bulk-delete-confirm",
+        Input(type="hidden", name="ids", value="", id="zefe-bulk-ids"),
+        Button(
+            icon("trash", cls="h-4 w-4"),
+            Span("Delete selected", cls="text-xs font-semibold"),
+            type="button",
+            title="Delete selected customers",
+            aria_label="Delete selected customers",
+            hx_get="/customers/bulk-delete-confirm",
+            hx_vals="js:{ids: window.zefeSelectedCustomerIds()}",
+            hx_target="#customer-modal-area",
+            hx_swap="innerHTML",
+            hx_include="[name='q'], [name='page']",
+            cls=(
+                "inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 "
+                "text-white text-xs font-semibold rounded-lg "
+                "hover:bg-rose-700 focus:outline-none focus:ring-2 "
+                "focus:ring-rose-500 focus:ring-offset-1 transition-colors"
+            ),
+        ),
         id="zefe-bulk-bar",
         style="display:none;",
-        cls="mb-4 px-4 py-3 bg-rose-50/50 border border-rose-100 rounded-xl",
+        cls=(
+            "mb-4 px-4 py-3 bg-rose-50/50 border border-rose-100 rounded-xl "
+            "items-center justify-between"
+        ),
     )
 
 
@@ -691,14 +700,18 @@ def register_routes(rt) -> None:
             return redirect
         id_list = [s.strip() for s in (ids or "").split(",") if s.strip()]
         if not id_list:
-            return HTMLResponse(
-                '<div class="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">'
-                '<div class="bg-white border border-slate-200 rounded-2xl max-w-md w-full p-6 shadow-lg">'
-                '<p class="text-sm text-slate-700">Please select at least one customer to delete.</p>'
-                '<div class="flex justify-end mt-4">'
-                '<button hx-get="/customers/clear-overlay" hx-target="#customer-modal-area" hx-swap="innerHTML" '
-                'class="px-4 py-2 bg-white border border-slate-300 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50">Close</button>'
-                "</div></div></div>"
+            return confirm_dialog(
+                title="Nothing selected",
+                message=(
+                    "Tick the checkbox on one or more customer rows, then "
+                    "choose Delete selected again."
+                ),
+                confirm_control="",
+                cancel_get="/customers/clear-overlay",
+                cancel_target="#customer-modal-area",
+                cancel_label="Close",
+                icon_name="alert-circle",
+                tone="info",
             )
 
         jwt = current_jwt(req)
@@ -718,7 +731,7 @@ def register_routes(rt) -> None:
                 logger.exception("bulk_delete_confirm: get_customer failed")
                 names.append(f"#{raw}")
 
-        list_items = [
+        selected_chips = [
             Div(
                 icon("users", cls="h-3 w-3 text-slate-500 shrink-0"),
                 Span(n, cls="text-sm text-slate-700 truncate"),
@@ -742,20 +755,29 @@ def register_routes(rt) -> None:
             hx_post="/customers/bulk-delete-htmx",
             hx_target="#customer-list-container",
             hx_swap="outerHTML",
+            method="post",
+            action="/customers/bulk-delete",
             cls="inline",
         )
 
-        return confirm_modal(
+        return confirm_dialog(
             title=f"Delete {count} {plural}?",
-            message=f"You are about to permanently delete {count} {plural} from your workspace. This action cannot be undone.",
-            confirm_btn=Div(
-                Div(
-                    *list_items,
-                    cls="flex flex-wrap gap-2 mt-5 p-4 bg-slate-50 border border-slate-200 rounded-xl max-h-60 overflow-auto",
-                ),
-                confirm_btn,
+            message=(
+                f"You are about to permanently delete {count} {plural} from "
+                "your workspace. Past invoices keep their stored customer "
+                "details, but this action cannot be undone."
             ),
-            cancel_hx_target="#customer-modal-area",
+            confirm_control=confirm_btn,
+            cancel_get="/customers/clear-overlay",
+            cancel_target="#customer-modal-area",
+            details=Div(
+                *selected_chips,
+                cls=(
+                    "flex flex-wrap gap-2 mt-5 p-4 bg-slate-50 border "
+                    "border-slate-200 rounded-xl max-h-60 overflow-auto"
+                ),
+            ),
+            max_w="max-w-lg",
         )
 
     @rt("/customers/bulk-delete-htmx", methods=["POST"])

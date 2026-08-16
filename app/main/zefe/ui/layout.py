@@ -27,6 +27,7 @@ from ui.icons import icon
 _NAV_ITEMS = [
     ("Dashboard", "/", "layout-dashboard", "dashboard"),
     ("Customers", "/customers", "users", "customers"),
+    ("Items", "/items", "package", "items"),
     ("Invoices", "/invoices", "receipt", "invoices"),
     ("Settings", "/settings", "settings", "settings"),
 ]

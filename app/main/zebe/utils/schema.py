@@ -11,8 +11,12 @@ from pydantic import (
 from typing import Optional
 from datetime import datetime
 
+from services.unit_codes import DEFAULT_UNIT_CODE, validate_unit_code
+
 
 TIN_PATTERN = re.compile(r"^\d{8}-\d{4}$")
+HSN_PATTERN = re.compile(r"^\d{4}\.\d{2}$")
+ISIC_PATTERN = re.compile(r"^\d{4}$")
 
 
 def validate_tin(value: Optional[str]) -> Optional[str]:
@@ -191,7 +195,9 @@ class Item(BaseModel):
 class Price(BaseModel):
     price_amount: float
     base_quantity: float
-    price_unit: str
+    price_unit: str = DEFAULT_UNIT_CODE
+
+    _validate_price_unit = field_validator("price_unit")(validate_unit_code)
 
 
 class PaymentMeansItem(BaseModel):
@@ -290,9 +296,13 @@ class UserCreate(UserBase):
     @classmethod
     def _validate_password_strength(cls, v: str) -> str:
         if not PASSWORD_UPPER.search(v):
-            raise ValueError("Password must contain at least one uppercase letter")
+            raise ValueError(
+                "Password must contain at least one uppercase letter"
+            )
         if not PASSWORD_LOWER.search(v):
-            raise ValueError("Password must contain at least one lowercase letter")
+            raise ValueError(
+                "Password must contain at least one lowercase letter"
+            )
         if not PASSWORD_DIGIT.search(v):
             raise ValueError("Password must contain at least one digit")
         return v
@@ -442,3 +452,149 @@ class UserProfileUpdate(BaseModel):
     lga: Optional[str] = None
 
     _validate_tin = field_validator("tin")(validate_tin)
+
+
+class NextIRNRequest(BaseModel):
+    issue_date: str
+    regenerate: bool = False
+    current_irn: Optional[str] = None
+
+
+class NextIRNResponse(BaseModel):
+    irn: str
+    sequence: int
+    service_id: str
+    date_segment: str
+    issue_date: str
+    reserved: bool = True
+
+
+class UnitCode(BaseModel):
+    code: str
+    name: str
+
+
+class ItemBase(BaseModel):
+    sku: Optional[str] = None
+    name: str = Field(min_length=1, max_length=200)
+    description: Optional[str] = None
+    hsn_code: Optional[str] = None
+    hsn_category: Optional[str] = None
+    isic_code: Optional[str] = None
+    isic_category: Optional[str] = None
+    unit_price: float
+    price_unit: str = DEFAULT_UNIT_CODE
+    base_quantity: float = 1.0
+
+    _validate_price_unit = field_validator("price_unit")(validate_unit_code)
+
+    @field_validator(
+        "sku",
+        "description",
+        "hsn_code",
+        "hsn_category",
+        "isic_code",
+        "isic_category",
+        mode="before",
+    )
+    @classmethod
+    def _blank_to_none(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _strip_name(cls, v):
+        return str(v).strip() if v is not None else v
+
+    @field_validator("unit_price")
+    @classmethod
+    def _validate_unit_price(cls, v: float) -> float:
+        if v is None or v <= 0:
+            raise ValueError(
+                "unit_price must be greater than zero — a priced-later item "
+                "cannot be invoiced."
+            )
+        return float(v)
+
+    @field_validator("base_quantity")
+    @classmethod
+    def _validate_base_quantity(cls, v: float) -> float:
+        if v is None or v <= 0:
+            raise ValueError("base_quantity must be greater than zero.")
+        return float(v)
+
+    @model_validator(mode="after")
+    def _validate_classification(self):
+        has_hsn = bool(self.hsn_code)
+        has_isic = bool(self.isic_code)
+        if has_hsn and has_isic:
+            raise ValueError(
+                "An item is either a product (HS code) or a service "
+                "(ISIC code), not both."
+            )
+        if not has_hsn and not has_isic:
+            raise ValueError(
+                "Either an HS code (product) or an ISIC code (service) is "
+                "required."
+            )
+        if has_hsn:
+            if not HSN_PATTERN.match(self.hsn_code):
+                raise ValueError(
+                    "hsn_code must use the FIRS format XXXX.XX (e.g. 1006.10)."
+                )
+            if not self.hsn_category:
+                raise ValueError(
+                    "hsn_category is required for product items — select it "
+                    "from the FIRS product lookup."
+                )
+        if has_isic:
+            if not ISIC_PATTERN.match(self.isic_code):
+                raise ValueError(
+                    "isic_code must be exactly 4 digits (e.g. 0112)."
+                )
+            if not self.isic_category:
+                raise ValueError(
+                    "isic_category is required for service items — select it "
+                    "from the FIRS service lookup."
+                )
+        return self
+
+
+class ItemCreate(ItemBase):
+    pass
+
+
+class ItemUpdate(ItemBase):
+    pass
+
+
+class ItemOut(ItemBase):
+    id: int
+    business_id: str
+    is_active: bool = True
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ItemPage(BaseModel):
+    total: int
+    offset: int
+    limit: int
+    items: list[ItemOut]
+
+
+class ItemBulkDelete(BaseModel):
+    ids: list[int] = []
+    hard: bool = False
+
+
+class ItemImportResult(BaseModel):
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    errors: list[str] = []

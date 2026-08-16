@@ -162,6 +162,10 @@ def _run_zebe_item_flow(tmp_db: str) -> None:
             db=db,
         )
         assert created.sku == "SVC-001", "Item SKU not persisted"
+        assert created.price_unit == "C62", (
+            "legacy free-text price_unit was not normalized to an official "
+            f"unit code (got {created.price_unit!r})"
+        )
 
         page = list_items(
             token=token, db=db, search="consult", offset=0, limit=10
@@ -227,6 +231,13 @@ def _run_zebe_item_flow(tmp_db: str) -> None:
             db=db,
         )
         assert deleted["deleted"] == 1
+
+        remaining = list_items(token=token, db=db, offset=0, limit=10)
+        assert all(i.sku != "SVC-001" for i in remaining["items"]), (
+            "soft-deleted item still appears in the active listing"
+        )
+
+        _run_zebe_unit_and_irn_checks(db, user)
     finally:
         db.close()
         try:
@@ -234,6 +245,45 @@ def _run_zebe_item_flow(tmp_db: str) -> None:
         except OSError:
             logging.exception("Unexpected error")
     print("  ✓ item API create / search / update / import / bulk-delete OK")
+
+
+def _run_zebe_unit_and_irn_checks(db, user) -> None:
+    """Unit-code compliance + server-side IRN reservation guardrails."""
+    from services.unit_codes import (
+        DEFAULT_UNIT_CODE,
+        coerce_unit_code,
+        normalize_unit_code,
+    )
+    from services.invoice_service import DEFAULT_PRICE_UNIT
+    from services.irn_service import parse_irn, reserve_next_irn
+
+    assert DEFAULT_UNIT_CODE == "C62"
+    assert DEFAULT_PRICE_UNIT == DEFAULT_UNIT_CODE, (
+        "invoice assembly still defaults to a non-compliant price unit"
+    )
+    assert coerce_unit_code("NGN per 1") == "C62"
+    assert coerce_unit_code("kg") == "KGM"
+    assert coerce_unit_code("") == "C62"
+    assert normalize_unit_code("banana") is None
+    print("  ✓ official unit-code constants and normalization OK")
+
+    irn1, seq1 = reserve_next_irn(
+        db,
+        business_id=user.business_id,
+        service_id=user.service_id,
+        issue_date="2026-03-01",
+    )
+    irn2, seq2 = reserve_next_irn(
+        db,
+        business_id=user.business_id,
+        service_id=user.service_id,
+        issue_date="2026-03-01",
+    )
+    assert seq2 == seq1 + 1, f"IRN sequence did not advance: {seq1} -> {seq2}"
+    parsed = parse_irn(irn2)
+    assert parsed is not None, f"generated IRN is malformed: {irn2}"
+    assert parsed[2] == "20260301", "IRN date segment does not match issue_date"
+    print("  ✓ server-side IRN reservation OK")
 
 
 # --------------------------------------------------------------------------

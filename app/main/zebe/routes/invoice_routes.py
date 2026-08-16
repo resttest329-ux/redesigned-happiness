@@ -16,6 +16,36 @@ from services.invoice_service import (
     validate_wizard,
     validate_totals_consistency,
 )
+from services.irn_service import (
+    IRNError,
+    date_segment_for,
+    parse_irn,
+    reserve_next_irn,
+)
+
+SUPPLIER_PROFILE_FIELDS = (
+    "tin",
+    "party_name",
+    "email",
+    "telephone",
+    "street_name",
+    "city_name",
+    "postal_zone",
+    "country",
+    "state",
+    "lga",
+)
+
+_AUTH_FAILURE_DETAIL = (
+    "FIRS rejected your credentials. Your certificate, public key or API "
+    "credentials are invalid or expired — update them in Settings → FIRS "
+    "Credentials and try again."
+)
+
+_NOT_ENABLED_DETAIL = (
+    "The recipient is not currently accepting eInvoices. Ask the customer to "
+    "enable eInvoice receiving with FIRS before submitting this invoice."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +99,47 @@ def _extract_error_detail(
     return default
 
 
+def _not_enabled_detail(body) -> str | None:
+    """Detect the FIRS NOT_ENABLED recipient failure in any upstream body."""
+    if not isinstance(body, dict):
+        return None
+    error_obj = body.get("error")
+    if isinstance(error_obj, dict):
+        if error_obj.get("sub_message") == "NOT_ENABLED":
+            return _NOT_ENABLED_DETAIL
+    blob = str(body).upper()
+    if "NOT_ENABLED" in blob:
+        return _NOT_ENABLED_DETAIL
+    return None
+
+
+def _translate_upstream_error(
+    status_code: int, body, default: str
+) -> HTTPException:
+    """Map an upstream FIRS/PASCA failure onto an actionable local error."""
+    not_enabled = _not_enabled_detail(body)
+    if not_enabled:
+        return HTTPException(status_code=400, detail=not_enabled)
+    if status_code in (401, 403):
+        return HTTPException(status_code=400, detail=_AUTH_FAILURE_DETAIL)
+    detail = _extract_error_detail(body, default)
+    if status_code in (400, 404, 409, 422):
+        return HTTPException(status_code=status_code, detail=detail)
+    return HTTPException(status_code=502, detail=detail)
+
+
+def _apply_supplier_profile_fallback(wizard: dict, user) -> None:
+    """Fill any missing supplier_* wizard field from the business profile."""
+    for field in SUPPLIER_PROFILE_FIELDS:
+        key = f"supplier_{field}"
+        current = wizard.get(key)
+        if current is not None and str(current).strip() != "":
+            continue
+        value = getattr(user, field, None)
+        if value is not None and str(value).strip() != "":
+            wizard[key] = str(value).strip()
+
+
 def _assert_local_invoice_owner(irn: str, user, db: Session) -> InvoiceLog:
     log = (
         db.query(InvoiceLog)
@@ -119,26 +190,23 @@ async def validate_invoice(
             logger.error(
                 f"validate-invoice upstream {status} for IRN {data.irn}: (no parseable body)"
             )
-        if status == 400:
-            detail = _extract_error_detail(
-                body,
-                "External API call failed. Please check all invoice fields are correctly filled.",
-            )
-            raise HTTPException(status_code=400, detail=detail)
-        elif status in (401, 403):
-            raise HTTPException(
-                status_code=502,
-                detail="FIRS authentication/authorisation failed",
-            )
-        else:
-            detail = _extract_error_detail(body, "External API call failed")
-            raise HTTPException(status_code=502, detail=detail)
+        raise _translate_upstream_error(
+            status,
+            body,
+            "External API call failed. Please check all invoice fields are correctly filled.",
+        )
+    except HTTPException:
+        logging.exception("Unexpected error")
+        raise
     except Exception as e:
         logging.exception("Unexpected error")
         logger.error(f"validate-invoice failed for IRN {data.irn}: {e}")
         raise HTTPException(status_code=502, detail="External API call failed")
     if response.get("code") != 200:
-        detail = _extract_error_detail(response, "Validation failed")
+        not_enabled = _not_enabled_detail(response)
+        detail = not_enabled or _extract_error_detail(
+            response, "Validation failed"
+        )
         raise HTTPException(
             status_code=400,
             detail=detail,
@@ -190,22 +258,14 @@ async def sign_invoice(
             logger.error(
                 f"sign-invoice upstream {status} for IRN {data.irn}: (no parseable body)"
             )
-        if status == 400:
-            detail = _extract_error_detail(
-                body,
-                "External API call failed during signing. Please check all invoice fields.",
-            )
-            raise HTTPException(status_code=400, detail=detail)
-        elif status in (401, 403):
-            raise HTTPException(
-                status_code=502,
-                detail="FIRS authentication/authorisation failed during signing",
-            )
-        else:
-            detail = _extract_error_detail(
-                body, "External API call failed during signing"
-            )
-            raise HTTPException(status_code=502, detail=detail)
+        raise _translate_upstream_error(
+            status,
+            body,
+            "External API call failed during signing. Please check all invoice fields.",
+        )
+    except HTTPException:
+        logging.exception("Unexpected error")
+        raise
     except Exception as e:
         logging.exception("Unexpected error")
         logger.error(f"sign-invoice failed for IRN {data.irn}: {e}")
@@ -239,21 +299,14 @@ async def transmit_invoice(
             logger.error(
                 f"transmit-invoice upstream {status} for IRN {irn}: (no parseable body)"
             )
+        not_enabled = _not_enabled_detail(body)
+        if not_enabled:
+            raise HTTPException(status_code=400, detail=not_enabled)
+
         if status == 400:
             detail = _extract_error_detail(
                 body, "External API call failed during transmit"
             )
-
-            if isinstance(body, dict):
-                error_obj = body.get("error")
-                if (
-                    isinstance(error_obj, dict)
-                    and error_obj.get("sub_message") == "NOT_ENABLED"
-                ):
-                    raise HTTPException(
-                        status_code=400,
-                        detail="Recipient is not currently accepting eInvoices. Ask the customer to enable eInvoice receiving before transmission.",
-                    )
 
             detail_lower = str(detail).lower()
             if any(
@@ -265,16 +318,12 @@ async def transmit_invoice(
                 )
                 return {"message": "Already transmitted", "data": {}}
             raise HTTPException(status_code=400, detail=detail)
-        elif status in (401, 403):
-            raise HTTPException(
-                status_code=502,
-                detail="FIRS authentication/authorisation failed",
-            )
-        else:
-            detail = _extract_error_detail(
-                body, "External API call failed during transmit"
-            )
-            raise HTTPException(status_code=502, detail=detail)
+        raise _translate_upstream_error(
+            status, body, "External API call failed during transmit"
+        )
+    except HTTPException:
+        logging.exception("Unexpected error")
+        raise
     except Exception as e:
         logging.exception("Unexpected error")
         logger.error(f"transmit-invoice failed for IRN {irn}: {e}")
@@ -366,6 +415,7 @@ async def update_invoice(
         response = await patch_request(endpoint=endpoint, payload=payload)
     except httpx.HTTPStatusError as e:
         status = e.response.status_code
+        body: dict = {}
         try:
             body = e.response.json()
             detail = _extract_error_detail(
@@ -382,14 +432,19 @@ async def update_invoice(
             f"update-invoice upstream {status} for IRN {irn}: {detail}"
         )
 
+        not_enabled = _not_enabled_detail(
+            body if isinstance(body, dict) else {}
+        )
+        if not_enabled:
+            raise HTTPException(status_code=400, detail=not_enabled)
         if status in (400, 404):
             raise HTTPException(status_code=status, detail=detail)
         if status in (401, 403):
-            raise HTTPException(
-                status_code=502,
-                detail="FIRS authentication/authorisation failed during payment status update",
-            )
+            raise HTTPException(status_code=400, detail=_AUTH_FAILURE_DETAIL)
         raise HTTPException(status_code=502, detail=detail)
+    except HTTPException:
+        logging.exception("Unexpected error")
+        raise
     except Exception as e:
         logging.exception("Unexpected error")
         logger.error(f"update-invoice failed for IRN {irn}: {e}")
@@ -406,6 +461,10 @@ def assemble_invoice(
     user = get_current_user_obj(token, db)
     _assert_invoice_rate_limit(user)
     wizard = body.wizard or {}
+
+    # Supplier identity always comes from the authenticated business profile
+    # when the wizard did not carry it (removes ~10 fields per invoice).
+    _apply_supplier_profile_fallback(wizard, user)
 
     structural_errors = validate_wizard(wizard)
     if structural_errors:
@@ -443,6 +502,68 @@ def assemble_invoice(
     wizard["computed"] = computed
     invoice_dict = build_invoice_schema(wizard, user.business_id)
     return {"computed": computed, **invoice_dict}
+
+
+@router.post("/next-irn", response_model=schema.NextIRNResponse)
+def next_irn(
+    body: schema.NextIRNRequest,
+    token: Annotated[str, Depends(oauth2_scheme)],
+    db: Session = Depends(get_db),
+):
+    """Generate and reserve the next FIRS IRN for this business + issue date.
+
+    The IRN pattern is ``INV{sequence}-{ServiceID}-{YYYYMMDD}``. The sequence
+    is owned by the server: persisted per business/day, floored by the highest
+    sequence in the local invoice log, and advanced past any collision.
+    """
+    user = get_current_user_obj(token, db)
+    if not (user.service_id or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No Service ID is configured for your business. FIRS IRNs "
+                "cannot be generated without it."
+            ),
+        )
+
+    try:
+        date_segment = date_segment_for(body.issue_date)
+    except IRNError as e:
+        logging.exception("Unexpected error")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    minimum = 0
+    if body.regenerate and body.current_irn:
+        parsed = parse_irn(body.current_irn)
+        if parsed and parsed[2] == date_segment:
+            minimum = parsed[0]
+
+    try:
+        irn, sequence = reserve_next_irn(
+            db,
+            business_id=user.business_id,
+            service_id=user.service_id,
+            issue_date=body.issue_date,
+            minimum=minimum,
+        )
+    except IRNError as e:
+        logging.exception("Unexpected error")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logging.exception("next-irn reservation failed")
+        logger.error(f"next-irn failed for business ***: {e}")
+        raise HTTPException(
+            status_code=500, detail="Could not reserve an IRN. Please retry."
+        )
+
+    return schema.NextIRNResponse(
+        irn=irn,
+        sequence=sequence,
+        service_id=user.service_id,
+        date_segment=date_segment,
+        issue_date=body.issue_date,
+        reserved=True,
+    )
 
 
 @router.get("/{irn}/qr")

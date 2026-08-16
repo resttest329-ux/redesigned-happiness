@@ -12,6 +12,7 @@ from fasthtml.common import (
     H2,
     H3,
     Hidden,
+    HTMLResponse,
     Img,
     Input,
     Label,
@@ -44,6 +45,8 @@ from services.errors import extract_api_error_detail
 from ui.components import (
     alert,
     card,
+    confirm_detail_rows,
+    confirm_dialog,
     pagination_controls,
     primary_button,
 )
@@ -581,16 +584,14 @@ def register_routes(rt) -> None:
                     title="Download a PDF copy of this invoice",
                     cls="inline-flex items-center gap-2 px-4 py-2 bg-white border border-slate-300 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50",
                 ),
-                Form(
-                    Button(
-                        icon("send", cls="h-4 w-4"),
-                        Span("Transmit"),
-                        type="submit",
-                        cls="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700",
-                    ),
-                    method="post",
-                    action=f"/invoices/{irn}/transmit",
-                    cls="inline",
+                Button(
+                    icon("send", cls="h-4 w-4"),
+                    Span("Transmit"),
+                    type="button",
+                    hx_get=f"/invoices/{irn}/transmit-confirm",
+                    hx_target="#invoice-modal-area",
+                    hx_swap="innerHTML",
+                    cls="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700",
                 )
                 if not is_transmitted
                 else "",
@@ -602,12 +603,6 @@ def register_routes(rt) -> None:
         is_terminal_status = (payment_status or "").upper() in (
             "PAID",
             "REJECTED",
-        )
-
-        external_default = (
-            payment_status
-            if payment_status in ("PAID", "PARTIAL", "REJECTED")
-            else "PAID"
         )
 
         status_form_script = Script(
@@ -647,22 +642,16 @@ def register_routes(rt) -> None:
                 Div(
                     Select(
                         Option(
-                            "PAID",
-                            value="PAID",
-                            selected=external_default == "PAID",
+                            "Select status",
+                            value="",
+                            selected=True,
                         ),
-                        Option(
-                            "PARTIAL",
-                            value="PARTIAL",
-                            selected=external_default == "PARTIAL",
-                        ),
-                        Option(
-                            "REJECTED",
-                            value="REJECTED",
-                            selected=external_default == "REJECTED",
-                        ),
+                        Option("PAID", value="PAID"),
+                        Option("PARTIAL", value="PARTIAL"),
+                        Option("REJECTED", value="REJECTED"),
                         name="payment_status",
                         id="zefe-status-select",
+                        required=True,
                         cls="w-full appearance-none px-3 py-2 pr-9 bg-white text-slate-900 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500",
                     ),
                     icon(
@@ -773,6 +762,9 @@ def register_routes(rt) -> None:
                 cls="flex justify-end",
             ),
             status_form_script,
+            hx_post=f"/invoices/{irn}/status-confirm",
+            hx_target="#invoice-modal-area",
+            hx_swap="innerHTML",
             method="post",
             action=f"/invoices/{irn}/status",
         )
@@ -948,6 +940,7 @@ def register_routes(rt) -> None:
                 qr_card,
                 cls="grid grid-cols-1 md:grid-cols-3 gap-4",
             ),
+            Div(id="invoice-modal-area"),
             active_nav="invoices",
             username=current_username(req),
             business_id=current_business_id(req),
@@ -1032,6 +1025,141 @@ def register_routes(rt) -> None:
             media_type="application/pdf",
         )
 
+    @rt("/invoices/clear-overlay", methods=["GET"])
+    def clear_invoice_overlay(req: Request):
+        return HTMLResponse("")
+
+    @rt("/invoices/{irn}/transmit-confirm", methods=["GET"])
+    def transmit_confirm(req: Request, irn: str):
+        redirect = require_session(req)
+        if redirect:
+            return redirect
+        confirm_btn = Form(
+            Button(
+                icon("send", cls="h-4 w-4"),
+                Span("Transmit now"),
+                type="submit",
+                cls=(
+                    "inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 "
+                    "text-white text-sm font-medium rounded-lg "
+                    "hover:bg-indigo-700"
+                ),
+            ),
+            method="post",
+            action=f"/invoices/{irn}/transmit",
+            cls="inline",
+        )
+        return confirm_dialog(
+            title="Transmit this invoice to FIRS?",
+            message=(
+                "Transmission sends the signed invoice to the FIRS gateway. "
+                "Once transmitted it cannot be recalled \u2014 corrections must "
+                "be issued as a new invoice with a fresh IRN."
+            ),
+            confirm_control=confirm_btn,
+            cancel_get="/invoices/clear-overlay",
+            cancel_target="#invoice-modal-area",
+            icon_name="send",
+            tone="info",
+            details=confirm_detail_rows([("IRN", irn)]),
+        )
+
+    @rt("/invoices/{irn}/status-confirm", methods=["POST"])
+    async def status_confirm(req: Request, irn: str):
+        redirect = require_session(req)
+        if redirect:
+            return redirect
+        form = await req.form()
+        new_status = (form.get("payment_status") or "").strip().upper()
+        secret = (form.get("user_secret") or "").strip()
+        amount_raw = (form.get("amount") or "").strip()
+        reference = (form.get("reference") or "").strip()
+        payment_update_date = (form.get("payment_update_date") or "").strip()
+
+        if new_status not in ("PAID", "PARTIAL", "REJECTED"):
+            return confirm_dialog(
+                title="Select a payment status",
+                message=(
+                    "Choose Paid, Partial, or Rejected from the status "
+                    "dropdown before updating this invoice."
+                ),
+                confirm_control="",
+                cancel_get="/invoices/clear-overlay",
+                cancel_target="#invoice-modal-area",
+                cancel_label="Close",
+                icon_name="alert-circle",
+                tone="info",
+            )
+        if not secret:
+            return confirm_dialog(
+                title="Signing secret required",
+                message=(
+                    "Enter your signing secret so FIRS can authorise this "
+                    "payment status update."
+                ),
+                confirm_control="",
+                cancel_get="/invoices/clear-overlay",
+                cancel_target="#invoice-modal-area",
+                cancel_label="Close",
+                icon_name="alert-circle",
+                tone="info",
+            )
+
+        is_final = new_status in ("PAID", "REJECTED")
+        rows = [("IRN", irn), ("New status", new_status)]
+        if new_status == "PARTIAL" and amount_raw:
+            rows.append(("Amount paid", amount_raw))
+        if reference:
+            rows.append(("Reference", reference))
+        if payment_update_date:
+            rows.append(("Payment date", payment_update_date))
+
+        message = (
+            f"Marking this invoice as {new_status} is final on the FIRS "
+            "gateway \u2014 the payment status can never be changed again. To "
+            "correct it later you must issue a new invoice with a fresh IRN."
+            if is_final
+            else (
+                "This records a partial payment against the invoice on the "
+                "FIRS gateway. You can still settle the remaining balance "
+                "later."
+            )
+        )
+
+        confirm_btn = Form(
+            Hidden(name="payment_status", value=new_status),
+            Hidden(name="user_secret", value=secret),
+            Hidden(name="amount", value=amount_raw),
+            Hidden(name="reference", value=reference),
+            Hidden(name="payment_update_date", value=payment_update_date),
+            Button(
+                Span(f"Set status to {new_status}"),
+                type="submit",
+                cls=(
+                    "px-4 py-2 bg-indigo-600 text-white text-sm font-medium "
+                    "rounded-lg hover:bg-indigo-700"
+                    if not is_final
+                    else "px-4 py-2 bg-slate-900 text-white text-sm "
+                    "font-medium rounded-lg hover:bg-slate-800"
+                ),
+            ),
+            method="post",
+            action=f"/invoices/{irn}/status",
+            cls="inline",
+        )
+
+        return confirm_dialog(
+            title=f"Update payment status to {new_status}?",
+            message=message,
+            confirm_control=confirm_btn,
+            cancel_get="/invoices/clear-overlay",
+            cancel_target="#invoice-modal-area",
+            icon_name="alert-triangle" if is_final else "alert-circle",
+            tone="warning" if is_final else "info",
+            details=confirm_detail_rows(rows),
+            max_w="max-w-lg",
+        )
+
     @rt("/invoices/{irn}/transmit", methods=["POST"])
     async def transmit_invoice(req: Request, irn: str):
         redirect = require_session(req)
@@ -1090,7 +1218,8 @@ def register_routes(rt) -> None:
 
         if new_status not in ("PAID", "PARTIAL", "REJECTED"):
             msg = urllib.parse.quote_plus(
-                "Choose PAID, PARTIAL, or REJECTED to update the FIRS payment status."
+                "No payment status was selected. Choose Paid, Partial, or "
+                "Rejected from the status dropdown, then update again."
             )
             return RedirectResponse(
                 f"/invoices/{irn}?error={msg}", status_code=303

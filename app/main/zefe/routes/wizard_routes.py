@@ -44,9 +44,17 @@ from services.errors import (
     extract_api_error_detail,
     normalize_transmission_error,
 )
+from services.unit_codes import (
+    DEFAULT_UNIT_CODE,
+    coerce_unit_code,
+    unit_code_label,
+    unit_code_options,
+)
 from ui.components import (
     alert,
     card,
+    confirm_detail_rows,
+    confirm_dialog,
     country_state_fields,
     guidance_panel,
     guidance_text,
@@ -69,9 +77,56 @@ def _normalize_service_segment(service_id: str) -> str:
 
 
 def _default_price_unit(wizard: dict) -> str:
-    """Derive the default unit descriptor from the document currency."""
-    curr = (wizard.get("document_currency_code") or "NGN").strip().upper()
-    return f"{curr} per 1"
+    """Official default unit code for a new line (never free text).
+
+    FIRS requires ``price_unit`` to be a 2-3 character UN/ECE code, so the
+    wizard always defaults to ``C62`` (one / each) regardless of currency.
+    """
+    return DEFAULT_UNIT_CODE
+
+
+def _unit_select_field(value: str = DEFAULT_UNIT_CODE) -> Div:
+    """Compact official unit-code dropdown for the line form."""
+    current = coerce_unit_code(value)
+    opts = []
+    for code, label in unit_code_options():
+        opts.append(
+            Option(f"{code} — {label}", value=code, selected=(code == current))
+        )
+    return Div(
+        Label(
+            "Price unit",
+            fr="price_unit",
+            cls="block text-sm font-medium text-slate-700 mb-1.5",
+        ),
+        Div(
+            Select(
+                *opts,
+                id="price_unit",
+                name="price_unit",
+                required=True,
+                cls=(
+                    "w-full appearance-none px-3 py-2 pr-9 bg-white "
+                    "text-slate-900 border border-slate-300 rounded-lg "
+                    "text-sm focus:outline-none focus:ring-2 "
+                    "focus:ring-indigo-500"
+                ),
+            ),
+            icon(
+                "chevron-down",
+                cls=(
+                    "h-4 w-4 text-slate-400 absolute right-3 top-1/2 "
+                    "-translate-y-1/2 pointer-events-none"
+                ),
+            ),
+            cls="relative",
+        ),
+        guidance_text(
+            "Official 2–3 character UN/ECE unit code (C62 = one / each). "
+            "FIRS rejects free text such as 'NGN per 1'."
+        ),
+        cls="mb-4",
+    )
 
 
 async def _compute_next_irn(jwt: str, sid: str, service_id: str) -> str:
@@ -1304,8 +1359,213 @@ def _paired_adjustment_field(
     )
 
 
+def _catalog_item_row(item: dict) -> Button:
+    """One saved catalog item, clickable to fill the line form."""
+    kind = "product" if item.get("hsn_code") else "service"
+    code = item.get("hsn_code") or item.get("isic_code") or ""
+    prefix = "HS" if kind == "product" else "ISIC"
+    badge_cls = (
+        "bg-indigo-100 text-indigo-700"
+        if kind == "product"
+        else "bg-purple-100 text-purple-700"
+    )
+    unit = coerce_unit_code(item.get("price_unit"))
+    sku = item.get("sku") or ""
+    return Button(
+        Div(
+            Div(
+                Span(
+                    "Product" if kind == "product" else "Service",
+                    cls=(
+                        "inline-flex items-center px-2 py-0.5 rounded-full "
+                        "text-[10px] font-semibold uppercase tracking-wider "
+                        f"w-fit shrink-0 {badge_cls}"
+                    ),
+                ),
+                P(
+                    item.get("name", ""),
+                    cls=(
+                        "text-sm font-medium text-slate-900 text-left "
+                        "whitespace-normal break-words"
+                    ),
+                ),
+                cls="flex items-start gap-2 min-w-0",
+            ),
+            Div(
+                Span(
+                    f"{prefix} {code}",
+                    cls="text-xs text-slate-500 font-mono",
+                ),
+                Span(f"· SKU {sku}", cls="text-xs text-slate-500 font-mono")
+                if sku
+                else "",
+                Span(
+                    f"· {float(item.get('unit_price', 0) or 0):.2f} / {unit}",
+                    cls="text-xs font-semibold text-slate-700",
+                ),
+                cls="flex items-center gap-1.5 flex-wrap mt-1",
+            ),
+            cls="min-w-0 w-full",
+        ),
+        type="button",
+        hx_get="/invoices/wizard/line/catalog/apply",
+        hx_vals=json.dumps({"item_id": str(item.get("id", ""))}),
+        hx_include="[name='invoiced_quantity']",
+        hx_target="#line-form-fields",
+        hx_swap="outerHTML",
+        cls=(
+            "w-full px-3 py-3 hover:bg-indigo-50 border-b border-slate-100 "
+            "last:border-b-0 text-left transition-colors cursor-pointer block"
+        ),
+    )
+
+
+def _catalog_results(items: list[dict], query: str) -> Div:
+    if not items:
+        message = (
+            f"No saved items matched “{query}”. Use the classification "
+            "lookup below, or add it to your catalog from the Items page."
+            if query
+            else (
+                "No saved items yet. Add reusable items on the Items page, "
+                "or use the classification lookup below."
+            )
+        )
+        return Div(
+            P(
+                message,
+                cls="text-xs text-slate-500 px-3 py-3 leading-relaxed",
+            ),
+            id="catalog-results",
+            cls="mt-2 rounded-lg border border-slate-200 bg-slate-50/60",
+        )
+    return Div(
+        *[_catalog_item_row(i) for i in items[:20]],
+        id="catalog-results",
+        cls=(
+            "mt-2 max-h-64 overflow-auto rounded-lg border border-slate-200 "
+            "bg-white shadow-xs animate-fade-in-up"
+        ),
+    )
+
+
+def _catalog_block(query: str, items: list[dict]) -> Div:
+    return Div(
+        Div(
+            Label(
+                "Saved items",
+                cls="block text-sm font-medium text-slate-700 mb-1.5",
+            ),
+            Span(
+                "Recommended",
+                cls=(
+                    "inline-flex items-center px-2 py-0.5 rounded-full "
+                    "text-[10px] font-semibold uppercase tracking-wider "
+                    "bg-indigo-50 text-indigo-700 border border-indigo-200 "
+                    "w-fit"
+                ),
+            ),
+            cls="flex items-center justify-between gap-2",
+        ),
+        guidance_panel(
+            "Pick from your Items catalog to fill the name, SKU, "
+            "description, classification, unit price and unit code in one "
+            "click — then just set the quantity.",
+            cls="mb-3",
+        ),
+        Div(
+            icon(
+                "package",
+                cls=(
+                    "h-4 w-4 text-slate-400 absolute left-3 top-1/2 "
+                    "-translate-y-1/2 pointer-events-none"
+                ),
+            ),
+            Input(
+                type="search",
+                name="catalog_q",
+                id="catalog-q-input",
+                placeholder="Search your saved items by name or SKU…",
+                value=query,
+                autocomplete="off",
+                hx_get="/invoices/wizard/line/catalog",
+                hx_trigger="keyup changed delay:350ms, search",
+                hx_target="#catalog-results",
+                hx_swap="outerHTML",
+                hx_indicator="#catalog-spinner",
+                cls=(
+                    "w-full pl-9 pr-9 py-2 bg-white text-slate-900 "
+                    "border border-slate-300 rounded-lg text-sm "
+                    "focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                ),
+            ),
+            Div(
+                icon("loader", cls="h-4 w-4 text-indigo-500 animate-spin"),
+                id="catalog-spinner",
+                cls=(
+                    "htmx-indicator absolute right-3 top-1/2 "
+                    "-translate-y-1/2 pointer-events-none"
+                ),
+            ),
+            cls="relative",
+        ),
+        _catalog_results(items, query),
+        Div(
+            A(
+                icon("package", cls="h-3 w-3"),
+                Span("Manage items"),
+                href="/items",
+                target="_blank",
+                cls=(
+                    "inline-flex items-center gap-1.5 text-xs font-medium "
+                    "text-indigo-600 hover:underline"
+                ),
+            ),
+            cls="mt-2",
+        ),
+        cls="mb-5 p-4 bg-white rounded-lg border border-indigo-200",
+    )
+
+
+def _line_from_catalog_item(item: dict, quantity: str = "1") -> dict:
+    """Merge a saved catalog item into a wizard line (quantity stays local)."""
+    return {
+        "name": item.get("name", "") or "",
+        "description": item.get("description", "") or "",
+        "sellers_item_identification": item.get("sku", "") or "",
+        "hsn_code": item.get("hsn_code", "") or "",
+        "product_category": item.get("hsn_category", "") or "",
+        "isic_code": item.get("isic_code", "") or "",
+        "service_category": item.get("isic_category", "") or "",
+        "invoiced_quantity": quantity or "1",
+        "price_amount": str(item.get("unit_price", "") or ""),
+        "price_unit": coerce_unit_code(item.get("price_unit")),
+        "base_quantity": str(item.get("base_quantity", "1") or "1"),
+    }
+
+
+async def _load_catalog_items(
+    jwt: str, sid: str, query: str = "", limit: int = 20
+) -> list[dict]:
+    """Active catalog items for the line picker (best-effort)."""
+    try:
+        res = await api_client.list_items(
+            jwt,
+            session_id=sid,
+            search=(query or None),
+            active=True,
+            offset=0,
+            limit=limit,
+        )
+        items = (res or {}).get("items", []) or []
+        return [i for i in items if isinstance(i, dict)]
+    except Exception:
+        logger.exception("wizard: list_items failed")
+        return []
+
+
 def _line_form_fields(
-    line: dict, *, error: str = "", default_unit: str = "NGN per 1"
+    line: dict, *, error: str = "", default_unit: str = DEFAULT_UNIT_CODE
 ) -> Div:
     has_hsn = bool(line.get("hsn_code"))
     has_isic = bool(line.get("isic_code"))
@@ -1450,7 +1710,10 @@ def _line_form_fields(
                 ),
                 Div(
                     guidance_panel(
-                        f"These fields describe the invoice unit basis. They should usually remain as defaults ('1' and '{default_unit}') unless you are billing complex metered units or multi-base quantities.",
+                        "These fields describe the invoice unit basis. Leave "
+                        f"them at the defaults ('1' and '{default_unit} — "
+                        f"{unit_code_label(default_unit)}') unless you bill "
+                        "metered units or multi-base quantities.",
                         cls="mb-4",
                     ),
                     Div(
@@ -1464,13 +1727,8 @@ def _line_form_fields(
                             step="1",
                             helper="Quantity unit price applies to.",
                         ),
-                        _field(
-                            name="price_unit",
-                            label="Price unit",
-                            value=line.get("price_unit") or default_unit,
-                            placeholder=default_unit,
-                            required=True,
-                            helper="Unit basis descriptor.",
+                        _unit_select_field(
+                            line.get("price_unit") or default_unit
                         ),
                         cls="grid grid-cols-1 md:grid-cols-2 gap-x-4",
                     ),
@@ -1491,10 +1749,13 @@ def _line_modal(
     error: str = "",
     lookup_query: str = "",
     lookup_hits: list[dict] | None = None,
-    default_unit: str = "NGN per 1",
+    catalog_query: str = "",
+    catalog_items: list[dict] | None = None,
+    default_unit: str = DEFAULT_UNIT_CODE,
 ) -> Div:
     line = line or {}
     lookup_hits = lookup_hits or []
+    catalog_items = catalog_items or []
     is_edit = edit_idx >= 0
     title = "Edit line item" if is_edit else "Add line item"
     submit_label = "Update line" if is_edit else "Add line"
@@ -1547,12 +1808,14 @@ def _line_modal(
                 ),
                 Div(
                     Div(
+                        _catalog_block(catalog_query, catalog_items),
                         Label(
-                            "Item lookup",
+                            "Classification lookup",
                             cls="block text-sm font-medium text-slate-700 mb-1.5",
                         ),
                         guidance_panel(
-                            "Type to search across HS codes (products) and ISIC codes (services).",
+                            "Not in your catalog yet? Search across HS codes "
+                            "(products) and ISIC codes (services) instead.",
                             cls="mb-3",
                         ),
                         Div(
@@ -1955,11 +2218,98 @@ def _stage_card(
     )
 
 
+def _signing_secret_setup_card() -> Form:
+    """Inline first-timer onboarding: set the signing secret without leaving
+    the wizard, then continue straight to signing."""
+    input_cls = (
+        "w-full pl-9 pr-3 py-2 bg-white text-slate-900 border "
+        "border-slate-300 rounded-lg text-sm focus:outline-none "
+        "focus:ring-2 focus:ring-indigo-500"
+    )
+
+    def secret_input(name: str, placeholder: str) -> Div:
+        return Div(
+            icon(
+                "settings",
+                cls=(
+                    "h-4 w-4 text-slate-400 absolute left-3 top-1/2 "
+                    "-translate-y-1/2 pointer-events-none"
+                ),
+            ),
+            Input(
+                id=name,
+                name=name,
+                type="password",
+                required=True,
+                autocomplete="new-password",
+                placeholder=placeholder,
+                cls=input_cls,
+            ),
+            cls="relative",
+        )
+
+    return Form(
+        guidance_panel(
+            "You don't have a signing secret yet. It is the passphrase that "
+            "authorises your invoices with FIRS \u2014 set it once here and "
+            "reuse it for every invoice. You can change it later in "
+            "Settings \u2192 Signing Secret.",
+            title="First invoice? Set your signing secret",
+            cls="mb-4",
+        ),
+        Div(
+            Label(
+                "New signing secret",
+                fr="user_secret",
+                cls="block text-sm font-medium text-slate-700 mb-1.5",
+            ),
+            secret_input("user_secret", "Choose a signing secret"),
+            guidance_text("Use at least 8 characters you can remember."),
+            cls="mb-4",
+        ),
+        Div(
+            Label(
+                "Confirm signing secret",
+                fr="confirm_secret",
+                cls="block text-sm font-medium text-slate-700 mb-1.5",
+            ),
+            secret_input("confirm_secret", "Re-enter to confirm"),
+            cls="mb-4",
+        ),
+        Div(
+            Button(
+                icon("check-circle", cls="h-4 w-4"),
+                Span("Save secret & continue"),
+                type="submit",
+                cls=(
+                    "inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 "
+                    "text-white text-sm font-medium rounded-lg "
+                    "hover:bg-indigo-700 shadow-sm"
+                ),
+            ),
+            A(
+                icon("settings", cls="h-3 w-3"),
+                Span("Manage in Settings"),
+                href="/settings/secret",
+                target="_blank",
+                cls=(
+                    "inline-flex items-center gap-1.5 text-xs font-medium "
+                    "text-indigo-600 hover:underline"
+                ),
+            ),
+            cls="flex items-center gap-4",
+        ),
+        method="post",
+        action="/invoices/wizard/set-secret",
+    )
+
+
 def _render_step4(
     *,
     wizard: dict,
     error: str = "",
     success: str = "",
+    has_secret: bool = True,
 ) -> Div:
     validated = bool(wizard.get("_validated"))
     signed = bool(wizard.get("_signed"))
@@ -1975,6 +2325,8 @@ def _render_step4(
 
     if signed:
         sign_state = "done"
+    elif validated and not has_secret:
+        sign_state = "pending"
     elif validated:
         sign_state = "active"
     else:
@@ -2059,6 +2411,8 @@ def _render_step4(
             ),
             cls="flex items-center gap-2 px-3 py-2 bg-emerald-50 rounded-lg border border-emerald-200",
         )
+    elif sign_state == "pending":
+        sign_body = _signing_secret_setup_card()
     elif sign_state == "active":
         sign_body = Form(
             Div(
@@ -2132,7 +2486,11 @@ def _render_step4(
     sign_card = _stage_card(
         num=2,
         title="Sign",
-        subtitle="Authorise the invoice with your signing secret.",
+        subtitle=(
+            "Set your signing secret to unlock signing."
+            if sign_state == "pending"
+            else "Authorise the invoice with your signing secret."
+        ),
         state=sign_state,
         body=sign_body,
     )
@@ -2153,20 +2511,18 @@ def _render_step4(
                 "from the invoice detail page if you'd rather review first.",
                 cls="text-sm text-slate-600 mb-3",
             ),
-            Form(
-                Button(
-                    icon("send", cls="h-4 w-4"),
-                    Span("Transmit to FIRS"),
-                    type="submit",
-                    cls=(
-                        "inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 "
-                        "text-white text-sm font-medium rounded-lg hover:bg-emerald-700 "
-                        "shadow-sm"
-                    ),
+            Button(
+                icon("send", cls="h-4 w-4"),
+                Span("Transmit to FIRS"),
+                type="button",
+                hx_get="/invoices/wizard/transmit-confirm",
+                hx_target="#wizard-modal-area",
+                hx_swap="innerHTML",
+                cls=(
+                    "inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 "
+                    "text-white text-sm font-medium rounded-lg "
+                    "hover:bg-emerald-700 shadow-sm cursor-pointer"
                 ),
-                method="post",
-                action="/invoices/wizard/transmit",
-                cls="inline",
             ),
         )
     else:
@@ -2549,7 +2905,21 @@ def register_routes(rt) -> None:
                 business_id=current_business_id(req),
             )
 
-        body = _render_step4(wizard=wizard, error=error, success=success)
+        has_secret = False
+        try:
+            secret_status = await api_client.get_user_secret_status(
+                jwt, session_id=sid
+            )
+            has_secret = bool((secret_status or {}).get("has_secret"))
+        except Exception:
+            logger.exception("wizard_root: get_user_secret_status failed")
+
+        body = _render_step4(
+            wizard=wizard,
+            error=error,
+            success=success,
+            has_secret=has_secret,
+        )
         return _wizard_layout(
             "Review & sign",
             "Validate against FIRS schema, sign with your secret, and optionally transmit.",
@@ -2866,10 +3236,66 @@ def register_routes(rt) -> None:
         if redirect:
             return redirect
         sid = get_session_id(req)
+        jwt = current_jwt(req)
         wizard = _load_wizard(sid)
         unit = _default_price_unit(wizard)
+        catalog = await _load_catalog_items(jwt, sid)
         return _line_modal(
-            edit_idx=-1, line={"price_unit": unit}, default_unit=unit
+            edit_idx=-1,
+            line={"price_unit": unit},
+            catalog_items=catalog,
+            default_unit=unit,
+        )
+
+    @rt("/invoices/wizard/line/catalog", methods=["GET"])
+    async def line_catalog_search(req: Request, catalog_q: str = ""):
+        redirect = require_session(req)
+        if redirect:
+            return redirect
+        q = (catalog_q or "").strip()
+        jwt = current_jwt(req)
+        sid = get_session_id(req)
+        items = await _load_catalog_items(jwt, sid, q)
+        return _catalog_results(items, q)
+
+    @rt("/invoices/wizard/line/catalog/apply", methods=["GET"])
+    async def line_catalog_apply(
+        req: Request, item_id: str = "", invoiced_quantity: str = ""
+    ):
+        redirect = require_session(req)
+        if redirect:
+            return redirect
+        sid = get_session_id(req)
+        jwt = current_jwt(req)
+        wizard = _load_wizard(sid)
+        default_unit = _default_price_unit(wizard)
+        qty = (invoiced_quantity or "").strip() or "1"
+
+        item: dict = {}
+        try:
+            item = await api_client.get_item(jwt, int(item_id), session_id=sid)
+        except (TypeError, ValueError):
+            logger.exception("line_catalog_apply: bad item id")
+        except api_client.APIError:
+            logger.exception("line_catalog_apply: get_item failed")
+        except Exception:
+            logger.exception("line_catalog_apply transport error")
+
+        if not item:
+            return _line_form_fields(
+                {"price_unit": default_unit, "invoiced_quantity": qty},
+                error=(
+                    "Could not load that saved item. It may have been "
+                    "deleted — refresh the search and try again."
+                ),
+                default_unit=default_unit,
+            )
+
+        line = _line_from_catalog_item(item, qty)
+        return (
+            _line_form_fields(line, default_unit=default_unit),
+            Div(id="catalog-results", hx_swap_oob="outerHTML"),
+            Div(id="lookup-results", hx_swap_oob="outerHTML"),
         )
 
     @rt("/invoices/wizard/line/{idx}/edit", methods=["GET"])
@@ -2878,12 +3304,19 @@ def register_routes(rt) -> None:
         if redirect:
             return redirect
         sid = get_session_id(req)
+        jwt = current_jwt(req)
         wizard = _load_wizard(sid)
         lines = wizard.get("step3", {}).get("lines", [])
         if idx < 0 or idx >= len(lines):
             return HTMLResponse("")
         unit = _default_price_unit(wizard)
-        return _line_modal(edit_idx=idx, line=lines[idx], default_unit=unit)
+        catalog = await _load_catalog_items(jwt, sid)
+        return _line_modal(
+            edit_idx=idx,
+            line=lines[idx],
+            catalog_items=catalog,
+            default_unit=unit,
+        )
 
     @rt("/invoices/wizard/line/lookup", methods=["GET"])
     async def line_lookup(req: Request, lookup_q: str = ""):
@@ -3467,7 +3900,7 @@ def register_routes(rt) -> None:
         qty = (invoiced_quantity or "").strip() or "1"
         price = (price_amount or "").strip() or "0.00"
         base_qty = (base_quantity or "").strip() or "1"
-        unit = (price_unit or "").strip() or "NGN per 1"
+        unit = coerce_unit_code(price_unit)
         sku = (sellers_item_identification or "").strip()
 
         def _short_name(full: str) -> str:
@@ -3483,7 +3916,7 @@ def register_routes(rt) -> None:
         sid = get_session_id(req)
         wizard = _load_wizard(sid)
         default_unit = _default_price_unit(wizard)
-        unit = (price_unit or "").strip() or default_unit
+        unit = coerce_unit_code(price_unit, default_unit)
         line = {
             "name": short,
             "description": full_desc,
@@ -3593,8 +4026,9 @@ def register_routes(rt) -> None:
                 form.get("invoiced_quantity"), 1.0
             ),
             "price_amount": _safe_float(form.get("price_amount"), 0.0),
-            "price_unit": (form.get("price_unit") or default_unit).strip()
-            or default_unit,
+            "price_unit": coerce_unit_code(
+                form.get("price_unit"), default_unit
+            ),
             "base_quantity": _safe_float(form.get("base_quantity"), 1.0),
             "discount_rate": discount_rate_out,
             "discount_amount": discount_amount_out,
@@ -3753,6 +4187,98 @@ def register_routes(rt) -> None:
                 "/invoices/wizard?step=4&error=Backend+service+unavailable",
                 status_code=303,
             )
+
+    @rt("/invoices/wizard/set-secret", methods=["POST"])
+    async def wizard_set_secret(req: Request):
+        """First-timer onboarding: create the signing secret inline so the
+        wizard can continue straight to signing."""
+        redirect = require_session(req)
+        if redirect:
+            return redirect
+        sid = get_session_id(req)
+        jwt = current_jwt(req)
+        form = await req.form()
+        secret = (form.get("user_secret") or "").strip()
+        confirm = (form.get("confirm_secret") or "").strip()
+
+        def _fail(message: str):
+            return RedirectResponse(
+                "/invoices/wizard?step=4&error="
+                + urllib.parse.quote_plus(message),
+                status_code=303,
+            )
+
+        if not secret:
+            return _fail("Signing secret cannot be empty.")
+        if len(secret) < 8:
+            return _fail("Signing secret must be at least 8 characters.")
+        if secret != confirm:
+            return _fail("The signing secrets you entered do not match.")
+
+        try:
+            await api_client.update_secret(jwt, secret, session_id=sid)
+        except api_client.APIError as e:
+            logger.exception("wizard_set_secret: update_secret failed")
+            return _fail(extract_api_error_detail(e))
+        except Exception:
+            logger.exception("wizard_set_secret transport error")
+            return _fail("Backend service unavailable. Please try again.")
+
+        try:
+            auth_service.save_user_secret(sid, secret)
+        except Exception:
+            logger.exception("wizard_set_secret: session cache best-effort")
+
+        return RedirectResponse(
+            "/invoices/wizard?step=4&success="
+            + urllib.parse.quote_plus(
+                "Signing secret saved. You can now sign this invoice."
+            ),
+            status_code=303,
+        )
+
+    @rt("/invoices/wizard/transmit-confirm", methods=["GET"])
+    def wizard_transmit_confirm(req: Request):
+        redirect = require_session(req)
+        if redirect:
+            return redirect
+        wizard = _load_wizard(get_session_id(req))
+        irn = wizard.get("irn", "") or "—"
+        confirm_btn = Form(
+            Button(
+                icon("send", cls="h-4 w-4"),
+                Span("Transmit now"),
+                type="submit",
+                cls=(
+                    "inline-flex items-center gap-2 px-4 py-2 bg-emerald-600 "
+                    "text-white text-sm font-medium rounded-lg "
+                    "hover:bg-emerald-700"
+                ),
+            ),
+            method="post",
+            action="/invoices/wizard/transmit",
+            cls="inline",
+        )
+        return confirm_dialog(
+            title="Transmit this invoice to FIRS?",
+            message=(
+                "The signed invoice will be sent to the FIRS gateway. "
+                "Transmission cannot be recalled \u2014 corrections must be "
+                "issued as a new invoice with a fresh IRN. You can also "
+                "transmit later from the invoice page."
+            ),
+            confirm_control=confirm_btn,
+            cancel_get="/invoices/wizard/modal/clear",
+            cancel_target="#wizard-modal-area",
+            icon_name="send",
+            tone="info",
+            details=confirm_detail_rows(
+                [
+                    ("IRN", irn),
+                    ("Customer", wizard.get("customer_party_name", "") or "—"),
+                ]
+            ),
+        )
 
     @rt("/invoices/wizard/sign", methods=["POST"])
     async def do_sign(req: Request):

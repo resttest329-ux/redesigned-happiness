@@ -1,5 +1,5 @@
 
-reflex[db]==0.9.5.post2
+reflex[db]==0.9.8
 httpx
 pillow
 pyjwt

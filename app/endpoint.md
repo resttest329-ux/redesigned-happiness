@@ -130,6 +130,13 @@ This reference document catalogs the backend endpoints exposed by the `zebe` API
 
 ## 5. Invoices (`/invoice`)
 
+### `POST /invoice/next-irn`
+- **Purpose**: Generates and reserves the next compliant IRN server-side.
+- **How Zefe Uses It**: Called when starting a draft (or when regenerating after an issue-date change / duplicate collision) instead of deriving the IRN in the frontend.
+- **Input**: JSON `{"issue_date": "YYYY-MM-DD", "regenerate": false, "current_irn": null}`.
+- **Output**: `{"irn": "INV3181-SERVICE0-20260301", "sequence": 3181, "service_id": "...", "date_segment": "20260301", "issue_date": "...", "reserved": true}`.
+- **Notes**: The sequence is persisted per business + day in `irn_sequence`, floored by the highest sequence in the local invoice log, and advanced past any IRN already present locally. The IRN date segment always matches `issue_date`; assembly rejects mismatches.
+
 ### `POST /invoice/validate-irn`
 - **Purpose**: Verifies that the IRN is legally linked to the business template.
 - **How Zefe Uses It**: Intercepts IRN inputs during Step 1 of the wizard.
@@ -162,12 +169,45 @@ This reference document catalogs the backend endpoints exposed by the `zebe` API
 
 ---
 
-## 6. Lookups (`/lookup`)
+## 6. Items Catalog (`/items`)
+
+An item is a reusable invoice line minus per-invoice fields. Items are scoped to the business, soft-deleted (`is_active`) so removing one never breaks a pending draft, and each line must be either a product (HS code + category) or a service (ISIC code + category).
+
+### `GET /items`
+- **Purpose**: Lists catalog items.
+- **Input**: `search` (name / SKU / description), `kind` (`product` | `service`), `active` (default `true`, pass `null` for all), `offset`, `limit`.
+- **Output**: Paginated `{total, offset, limit, items[]}`.
+
+### `POST /items`
+- **Purpose**: Creates an item. Enforces unique `(business_id, sku)`, HS/ISIC mutual exclusivity, required classification category, `unit_price > 0`, `base_quantity > 0`, and an official 2-3 character `price_unit`.
+- **Output**: The created item, or 409 on duplicate SKU.
+
+### `GET /items/{item_id}` / `PATCH /items/{item_id}`
+- **Purpose**: Load / update a single item with the same validation rules as creation.
+
+### `DELETE /items/{item_id}`
+- **Purpose**: Deactivates the item (soft delete). Pass `?hard=true` to remove the row permanently.
+
+### `POST /items/bulk-delete` / `POST /items/bulk-activate`
+- **Purpose**: Bulk deactivate (or hard delete with `{"hard": true}`) and bulk restore.
+- **Input**: JSON `{"ids": [1, 2, 3], "hard": false}`.
+- **Output**: `{"deleted": n, "requested": n, "mode": "soft"}` / `{"activated": n, "requested": n}`.
+
+### `POST /items/import`
+- **Purpose**: Bulk import from CSV (or XLSX when `openpyxl` is available).
+- **Input**: Multipart file with the columns `sku, name, description, hsn_code, hsn_category, isic_code, isic_category, unit_price, price_unit, base_quantity`.
+- **Output**: `{"created": n, "updated": n, "skipped": n, "errors": [...]}` — invalid rows are skipped with a per-row reason and never abort the import.
+
+## 7. Lookups (`/lookup`)
 
 ### `GET /lookup/types-of-invoice`
 - **Purpose**: Returns valid document types.
 - **How Zefe Uses It**: Step 1 document classification selection.
 - **Output**: Core codes matching FIRS-compliant classifications (`380` - Credit, `381` - Commercial, `384` - Debit, `385` - Self-Billed).
+
+### `GET /lookup/unit-codes`
+- **Purpose**: Returns the official 2-3 character unit codes accepted on invoice lines (`C62, EA, KGM, MTR, LTR, MTK, MTQ, HUR, DAY, BOX, BAG, BTL, CTN, SET`).
+- **How Zefe Uses It**: Populates the line-item unit selector; free-text unit values are no longer accepted.
 
 ### `GET /lookup/products` / `GET /lookup/services`
 - **Purpose**: Performs a keyword search on FIRS classifications.

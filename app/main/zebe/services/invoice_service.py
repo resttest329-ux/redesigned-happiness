@@ -8,8 +8,16 @@ logger = logging.getLogger(__name__)
 
 import qrcode
 
+from services.unit_codes import (
+    DEFAULT_UNIT_CODE,
+    coerce_unit_code,
+    normalize_unit_code,
+    sorted_unit_codes,
+)
+
 TAX_RATE = 0.075
-DEFAULT_PRICE_UNIT = "NGN per 1"
+#: FIRS requires an official 2-3 character UN/ECE unit code, never free text.
+DEFAULT_PRICE_UNIT = DEFAULT_UNIT_CODE
 
 _IRN_RE = re.compile(r"^INV\d+-[A-Z0-9]{1,12}-(\d{8})$")
 _TIN_RE = re.compile(r"^\d{8}-\d{4}$")
@@ -120,7 +128,9 @@ def build_invoice_schema(wizard: dict, business_id: str) -> dict:
             "item": item_dict,
             "price": {
                 "price_amount": _safe_float(line.get("price_amount", 0)),
-                "price_unit": line.get("price_unit") or DEFAULT_PRICE_UNIT,
+                "price_unit": coerce_unit_code(
+                    line.get("price_unit"), DEFAULT_PRICE_UNIT
+                ),
                 "base_quantity": max(
                     _safe_float(line.get("base_quantity", ""), 1.0), 1.0
                 ),
@@ -172,7 +182,9 @@ def build_invoice_schema(wizard: dict, business_id: str) -> dict:
 
     result = {
         "irn": (get("irn") or "").upper(),
-        "business_id": business_id or "",
+        # business_id must be passed through untouched (FIRS templates are
+        # registered against the strictly lowercase UUID).
+        "business_id": (business_id or "").strip(),
         "issue_date": get("issue_date"),
         "issue_time": datetime.now().strftime("%H:%M:%S"),
         "due_date": get("due_date") or None,
@@ -309,6 +321,14 @@ def _validate_line(idx: int, line: dict, errors: list[str]) -> None:
     if price <= 0:
         errors.append(f"Line {idx}: unit price must be greater than zero.")
 
+    price_unit_raw = line.get("price_unit")
+    if price_unit_raw is not None and str(price_unit_raw).strip() != "":
+        if normalize_unit_code(price_unit_raw) is None:
+            errors.append(
+                f"Line {idx}: price unit '{price_unit_raw}' is not an official "
+                f"unit code (expected one of: {', '.join(sorted_unit_codes())})."
+            )
+
     base_qty_raw = line.get("base_quantity")
     if base_qty_raw is not None and str(base_qty_raw).strip() != "":
         try:
@@ -359,6 +379,22 @@ def validate_wizard(wizard: dict) -> list[str]:
                     pass
         except ValueError:
             errors.append("Due date must be a valid YYYY-MM-DD date.")
+
+    if irn and issue_date:
+        m = _IRN_RE.match(irn.strip().upper())
+        if m:
+            try:
+                expected = datetime.strptime(issue_date, "%Y-%m-%d").strftime(
+                    "%Y%m%d"
+                )
+                if m.group(1) != expected:
+                    errors.append(
+                        "The IRN date segment must match the invoice issue "
+                        f"date ({expected}). Regenerate the IRN after "
+                        "changing the issue date."
+                    )
+            except ValueError:
+                pass
 
     inv_type = (wizard.get("invoice_type_code") or "").strip()
     if not inv_type:

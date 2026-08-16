@@ -16,6 +16,7 @@ from routes import (
     customer_routes,
     dashboard_routes,
     invoice_routes,
+    item_routes,
     settings_routes,
     wizard_routes,
 )
@@ -58,6 +59,7 @@ def rt(path, methods=None, **kwargs):
 auth_routes.register_routes(rt)
 customer_routes.register_routes(rt)
 dashboard_routes.register_routes(rt)
+item_routes.register_routes(rt)
 wizard_routes.register_routes(rt)
 invoice_routes.register_routes(rt)
 settings_routes.register_routes(rt)
