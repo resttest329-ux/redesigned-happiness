@@ -423,12 +423,15 @@ async def list_customers(
     token: str,
     session_id: Optional[str] = None,
     search: Optional[str] = None,
+    active: Optional[bool] = True,
     offset: int = 0,
     limit: int = 50,
 ) -> dict:
-    params = {"offset": offset, "limit": limit}
+    params: dict = {"offset": offset, "limit": limit}
     if search:
         params["search"] = search
+    if active is not None:
+        params["active"] = "true" if active else "false"
     resp = await _get(
         endpoints.CUSTOMERS, token, session_id=session_id, params=params
     )
@@ -565,19 +568,117 @@ async def update_customer(
 
 
 async def delete_customer(
-    token: str, cid: int, session_id: Optional[str] = None
-) -> None:
+    token: str,
+    cid: int,
+    session_id: Optional[str] = None,
+    hard: bool = False,
+) -> dict:
+    """Deactivate a customer, or remove it permanently with ``hard=True``."""
+
     async def _call(tok):
         _assert_client()
         try:
             r = await _client.delete(
                 endpoints.CUSTOMERS_BY_ID.format(cid=cid),
+                params={"hard": "true"} if hard else None,
                 headers={"Authorization": f"Bearer {tok}"},
             )
         except httpx.RequestError as e:
-            logging.exception("Unexpected error")
+            logging.exception("delete_customer transport error")
             raise TransportError(e)
         _check(r)
+        return r.json() if r.content else {}
+
+    return await _exec_with_refresh(_call, token, session_id)
+
+
+async def restore_customer(
+    token: str, cid: int, session_id: Optional[str] = None
+) -> dict:
+    async def _call(tok):
+        _assert_client()
+        try:
+            r = await _client.post(
+                endpoints.CUSTOMERS_RESTORE.format(cid=cid),
+                headers={"Authorization": f"Bearer {tok}"},
+            )
+        except httpx.RequestError as e:
+            logging.exception("restore_customer transport error")
+            raise TransportError(e)
+        _check(r)
+        return r.json() if r.content else {}
+
+    return await _exec_with_refresh(_call, token, session_id)
+
+
+async def bulk_delete_customers(
+    token: str,
+    ids: list[int],
+    session_id: Optional[str] = None,
+    hard: bool = False,
+) -> dict:
+    async def _call(tok):
+        _assert_client()
+        try:
+            r = await _client.post(
+                endpoints.CUSTOMERS_BULK_DELETE,
+                json={"ids": ids, "hard": hard},
+                headers={"Authorization": f"Bearer {tok}"},
+            )
+        except httpx.RequestError as e:
+            logging.exception("bulk_delete_customers transport error")
+            raise TransportError(e)
+        _check(r)
+        return r.json() if r.content else {}
+
+    return await _exec_with_refresh(_call, token, session_id)
+
+
+async def bulk_activate_customers(
+    token: str, ids: list[int], session_id: Optional[str] = None
+) -> dict:
+    async def _call(tok):
+        _assert_client()
+        try:
+            r = await _client.post(
+                endpoints.CUSTOMERS_BULK_ACTIVATE,
+                json={"ids": ids},
+                headers={"Authorization": f"Bearer {tok}"},
+            )
+        except httpx.RequestError as e:
+            logging.exception("bulk_activate_customers transport error")
+            raise TransportError(e)
+        _check(r)
+        return r.json() if r.content else {}
+
+    return await _exec_with_refresh(_call, token, session_id)
+
+
+async def import_customers(
+    token: str,
+    filename: str,
+    content: bytes,
+    session_id: Optional[str] = None,
+) -> dict:
+    async def _call(tok):
+        _assert_client()
+        try:
+            r = await _client.post(
+                endpoints.CUSTOMERS_IMPORT,
+                files={
+                    "file": (
+                        filename or "customers.csv",
+                        content,
+                        "application/octet-stream",
+                    )
+                },
+                headers={"Authorization": f"Bearer {tok}"},
+            )
+        except httpx.RequestError as e:
+            logging.exception("import_customers transport error")
+            raise TransportError(e)
+        _check(r)
+        return r.json() if r.content else {}
 
     return await _exec_with_refresh(_call, token, session_id)
 

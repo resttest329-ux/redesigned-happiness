@@ -754,7 +754,7 @@ def confirm_detail_rows(rows: list[tuple[str, str]]) -> Div:
             Div(
                 Span(label, cls="text-xs font-semibold text-slate-500"),
                 Span(
-                    value or "—",
+                    value or "-",
                     cls="text-sm font-medium text-slate-900 text-right truncate",
                 ),
                 cls="flex items-center justify-between gap-3 min-w-0",
@@ -770,13 +770,31 @@ def confirm_detail_rows(rows: list[tuple[str, str]]) -> Div:
 
 
 def table_container(headers: list, rows: list, id: str = None) -> Div:
-    thead_cells = [
-        Th(
-            h,
-            cls="px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider",
+    """Flat table shell.
+
+    ``headers`` entries are either a label, or a ``(label, align)`` pair where
+    ``align`` is ``left`` / ``center`` / ``right`` so numeric columns line up
+    with their header.
+    """
+    thead_cells = []
+    for h in headers:
+        label, align = h, "left"
+        if (
+            isinstance(h, (list, tuple))
+            and len(h) == 2
+            and isinstance(h[1], str)
+            and h[1] in ("left", "center", "right")
+        ):
+            label, align = h[0], h[1]
+        thead_cells.append(
+            Th(
+                label,
+                cls=(
+                    f"px-4 py-3 text-{align} text-xs font-semibold "
+                    "text-slate-500 uppercase tracking-wider"
+                ),
+            )
         )
-        for h in headers
-    ]
     return Div(
         Table(
             Thead(

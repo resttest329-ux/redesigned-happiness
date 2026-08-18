@@ -427,7 +427,9 @@ CustomerUpdate = CustomerCreate
 class CustomerOut(CustomerBase):
     id: int
     business_id: str
+    is_active: bool = True
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -437,6 +439,18 @@ class CustomerPage(BaseModel):
     offset: int
     limit: int
     items: list[CustomerOut]
+
+
+class CustomerBulkAction(BaseModel):
+    ids: list[int] = []
+    hard: bool = False
+
+
+class CustomerImportResult(BaseModel):
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    errors: list[str] = []
 
 
 class InvoiceLogCreate(BaseModel):

@@ -19,6 +19,9 @@ SESSIONS_WIZARD = "/api/sessions/{session_id}/wizard"
 
 CUSTOMERS = "/api/customers"
 CUSTOMERS_BY_ID = "/api/customers/{cid}"
+CUSTOMERS_RESTORE = "/api/customers/{cid}/restore"
+CUSTOMERS_BULK_DELETE = "/api/customers/bulk-delete"
+CUSTOMERS_BULK_ACTIVATE = "/api/customers/bulk-activate"
 CUSTOMERS_IMPORT = "/api/customers/import"
 CUSTOMERS_EXPORT = "/api/customers/export"
 

@@ -30,6 +30,7 @@ import os
 import re
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import logging
@@ -57,12 +58,31 @@ _SHARED_TOP_LEVEL_NAMES = (
     "ui",
 )
 
+# Modules that belong to only ONE subsystem but still cache subsystem state
+# (SQLAlchemy engines, HTTP clients, rate-limiter tables, endpoint tables).
+# They must be purged alongside the colliding names: leaving, say, a cached
+# ``utils.database`` behind while ``routes`` is re-imported is exactly how a
+# stale Postgres engine survives into a check that already forced SQLite.
+_SUBSYSTEM_TOP_LEVEL_NAMES = (
+    "rate_limiter",
+    "audit",
+    "seed",
+    "endpoints",
+)
+
+_PURGE_TOP_LEVEL_NAMES = _SHARED_TOP_LEVEL_NAMES + _SUBSYSTEM_TOP_LEVEL_NAMES
+
 
 def _purge_shared_modules() -> None:
-    """Drop cached imports whose top-level name collides across zebe/zefe."""
+    """Drop cached imports that must not leak between zebe/zefe checks.
+
+    This covers both the top-level names that collide across the two trees and
+    the single-subsystem modules that hold live connection/engine state, so the
+    next check always re-imports them against the environment it just forced.
+    """
     for name in list(sys.modules):
         root = name.split(".", 1)[0]
-        if root in _SHARED_TOP_LEVEL_NAMES:
+        if root in _PURGE_TOP_LEVEL_NAMES:
             sys.modules.pop(name, None)
 
 
@@ -119,8 +139,15 @@ def _configure_zebe_env() -> str:
     Any non-SQLite DATABASE_URL inherited from the environment is deliberately
     overridden: these smoke checks must never depend on psycopg2 or on a real
     Postgres instance being reachable.
+
+    ``utils.database`` calls ``load_dotenv(override=True)`` at import time,
+    which would happily put the deployment's Postgres URL back over the top of
+    ours, so the dotenv override is neutralized here (for this process only —
+    the application module itself is untouched) before any backend import.
     """
     global _ISOLATED_DB_PATH
+
+    _neutralize_dotenv()
 
     os.environ.setdefault(
         "JWT_SECRET_KEY",
@@ -147,16 +174,113 @@ def _configure_zebe_env() -> str:
     return _ISOLATED_DB_PATH
 
 
+def _reassert_zebe_env() -> None:
+    """Re-force the isolated SQLite DATABASE_URL.
+
+    Called immediately before every backend import (and again after any
+    ``load_dotenv`` call) so nothing can put a Postgres URL back in place
+    between configuration and import.
+    """
+    if _ISOLATED_DB_PATH:
+        os.environ["DATABASE_URL"] = f"sqlite:///{_ISOLATED_DB_PATH}"
+
+
+_DOTENV_PATCHED = False
+
+
+def _neutralize_dotenv() -> None:
+    """Make ``load_dotenv`` unable to clobber the harness environment.
+
+    zebe's ``utils/database.py`` (and ``seed.py``) call
+    ``load_dotenv(override=True)`` at import time. In this sandbox the on-disk
+    ``.env`` points DATABASE_URL at Postgres, so the override silently undid
+    :func:`_configure_zebe_env` and the import died on ``psycopg2``. The patch
+    is process-local to the test harness: it forces ``override=False`` and
+    re-asserts the isolated DATABASE_URL afterwards. Application code is
+    unchanged and behaves exactly as before outside this harness.
+    """
+    global _DOTENV_PATCHED
+    if _DOTENV_PATCHED:
+        return
+    _DOTENV_PATCHED = True
+    try:
+        import dotenv
+    except ImportError:
+        logging.getLogger("smoke_tests").debug(
+            "python-dotenv not installed; nothing to neutralize"
+        )
+        return
+
+    original = dotenv.load_dotenv
+
+    def _guarded_load_dotenv(*args, **kwargs):
+        kwargs["override"] = False
+        try:
+            result = original(*args, **kwargs)
+        except Exception:
+            logging.exception("guarded load_dotenv failed; ignoring")
+            result = False
+        _reassert_zebe_env()
+        return result
+
+    dotenv.load_dotenv = _guarded_load_dotenv
+    try:
+        import dotenv.main as dotenv_main
+
+        dotenv_main.load_dotenv = _guarded_load_dotenv
+    except ImportError:
+        logging.getLogger("smoke_tests").debug("dotenv.main unavailable")
+
+
+def _assert_zebe_db_isolated() -> None:
+    """Verify the freshly imported zebe engine really is the SQLite one."""
+    url = os.environ.get("DATABASE_URL", "")
+    assert url.startswith("sqlite:"), (
+        "DATABASE_URL must be forced to the isolated SQLite database before "
+        f"any zebe import (got {url.split('://')[0]!r})"
+    )
+
+    import utils.database as zebe_database
+
+    module_url = str(getattr(zebe_database, "DATABASE_URL", ""))
+    assert module_url.startswith("sqlite:"), (
+        "utils.database resolved a non-SQLite DATABASE_URL — the dotenv "
+        f"override guard is not in effect (got {module_url.split('://')[0]!r})"
+    )
+    backend = zebe_database.engine.url.get_backend_name()
+    assert backend == "sqlite", (
+        f"zebe engine is bound to {backend!r}, not the isolated SQLite file"
+    )
+
+
+@contextmanager
+def _zebe_imports():
+    """The ONLY sanctioned way to import zebe modules from a smoke check.
+
+    Guarantees, in order: the isolated SQLite DATABASE_URL is configured and
+    dotenv can no longer override it, stale cached backend modules are purged,
+    zebe is first on ``sys.path`` (and zefe is off it), the environment is
+    re-asserted, and the resulting engine is verified to be SQLite.
+    """
+    _configure_zebe_env()
+    with _SubsystemPath(ZEBE, sibling=ZEFE):
+        _reassert_zebe_env()
+        _assert_zebe_db_isolated()
+        yield
+
+
 def _cleanup_isolated_db() -> None:
     global _ISOLATED_DB_PATH
     if not _ISOLATED_DB_PATH:
         return
     try:
         Path(_ISOLATED_DB_PATH).unlink(missing_ok=True)
-    except OSError:
+    except OSError as exc:
+        # Leaving a temp file behind is harmless, so keep this concise.
         logging.exception("Unexpected error")
-        logger = logging.getLogger("smoke_tests")
-        logger.warning("could not remove temp SQLite DB %s", _ISOLATED_DB_PATH)
+        logging.getLogger("smoke_tests").warning(
+            "could not remove temp SQLite DB %s: %s", _ISOLATED_DB_PATH, exc
+        )
     _ISOLATED_DB_PATH = None
 
 
@@ -167,9 +291,7 @@ def _cleanup_isolated_db() -> None:
 
 def check_zebe_item_flow() -> None:
     print("[zebe] item API round-trip…", flush=True)
-    _configure_zebe_env()
-
-    with _SubsystemPath(ZEBE, sibling=ZEFE):
+    with _zebe_imports():
         _run_zebe_item_flow()
 
 
@@ -238,8 +360,13 @@ def _run_zebe_item_flow() -> None:
                 price_unit="NGN per 1",
             )
         except _PydanticValidationError as exc:
+            # Expected rejection: capture the message only. This negative path
+            # is a pass condition, so it must never log a traceback.
             logging.exception("Unexpected error")
             legacy_rejected = str(exc)
+            logging.getLogger("smoke_tests").debug(
+                "legacy price_unit rejected as expected: %s", legacy_rejected
+            )
         if not legacy_rejected:
             raise AssertionError(
                 "legacy free-text price_unit ('NGN per 1') must now be "
@@ -346,6 +473,7 @@ def _run_zebe_item_flow() -> None:
         )
 
         _run_zebe_unit_and_irn_checks(db, user)
+        _run_zebe_simple_import_checks(db, user)
     finally:
         db.close()
     print("  ✓ item API create / search / update / import / bulk-delete OK")
@@ -487,6 +615,16 @@ REQUIRED_API_CLIENT = {
         "user_secret",
         "payment_status",
     ),
+    # customer directory
+    "list_customers": ("token",),
+    "get_customer": ("token", "cid"),
+    "create_customer": ("token", "payload"),
+    "update_customer": ("token", "cid", "payload"),
+    "delete_customer": ("token", "cid", "hard"),
+    "restore_customer": ("token", "cid"),
+    "bulk_delete_customers": ("token", "ids", "hard"),
+    "bulk_activate_customers": ("token", "ids"),
+    "import_customers": ("token", "filename", "content"),
     # items catalog
     "list_items": ("token",),
     "get_item": ("token", "item_id"),
@@ -544,10 +682,10 @@ def check_zebe_derived_invoice_fields() -> None:
     business_id must pass through byte-exact (lowercase UUID).
     """
     print("[zebe] derived NRS invoice fields…", flush=True)
-    # Must run BEFORE the zebe import below: services.invoice_service pulls in
-    # utils.models -> utils.database, which builds the engine at import time.
-    _configure_zebe_env()
-    with _SubsystemPath(ZEBE, sibling=ZEFE):
+    # _zebe_imports() forces the isolated SQLite DATABASE_URL *before* the
+    # import below: services.invoice_service pulls in utils.models ->
+    # utils.database, which builds the engine at import time.
+    with _zebe_imports():
         _run_zebe_derived_field_checks()
     print("  ✓ invoice_kind / tax_point_date / payment_status derivation OK")
 
@@ -773,8 +911,7 @@ def check_zebe_outbound_route_behavior() -> None:
     No external request is made: only the local serialization path is run.
     """
     print("[zebe] validate/sign outbound payload behavior…", flush=True)
-    _configure_zebe_env()
-    with _SubsystemPath(ZEBE, sibling=ZEFE):
+    with _zebe_imports():
         _run_zebe_outbound_route_checks()
     print("  ✓ validate / sign post tax_currency_code via the field helper")
 
@@ -854,8 +991,12 @@ def _run_zebe_outbound_route_checks() -> None:
     try:
         ir._assert_outbound_fields({"irn": "X"}, operation="validate")
     except HTTPException as exc:
+        # Expected guardrail failure: capture the detail only, no traceback.
         logging.exception("Unexpected error")
         missing_failure = str(exc.detail)
+        logging.getLogger("smoke_tests").debug(
+            "missing tax_currency_code rejected as expected"
+        )
     if not missing_failure:
         raise AssertionError(
             "_assert_outbound_fields must raise when tax_currency_code is "
@@ -869,8 +1010,12 @@ def _run_zebe_outbound_route_checks() -> None:
             operation="validate",
         )
     except HTTPException as exc:
+        # Expected guardrail failure: capture the detail only, no traceback.
         logging.exception("Unexpected error")
         leak_failure = str(exc.detail)
+        logging.getLogger("smoke_tests").debug(
+            "camelCase tax currency leak rejected as expected"
+        )
     if not leak_failure:
         raise AssertionError(
             "_assert_outbound_fields must raise when the camelCase tax "
@@ -903,17 +1048,28 @@ def check_wizard_onboarding_wiring() -> None:
 
 
 def check_zefe_derived_fields_readonly() -> None:
-    """The wizard must display derived fields read-only and never as inputs."""
-    print("[zefe] derived fields are read-only…", flush=True)
+    """Derived fields must never be wizard inputs.
+
+    The read-only "Derived automatically" panel was removed from step 4 (it
+    restated values the user had already entered), so the guardrail is now:
+    the IRN stays a read-only block, the panel is gone, and no derived field
+    is ever exposed as an editable input.
+    """
+    print("[zefe] derived fields are never inputs…", flush=True)
     _purge_shared_modules()
     text = (Path(ZEFE) / "routes" / "wizard_routes.py").read_text()
-    for marker in (
+    assert "_irn_readonly_block" in text, (
+        "the IRN must stay a read-only, system-generated block"
+    )
+    for removed in (
         "_derived_fields_card",
+        "_derived_field_row",
         "_derived_invoice_kind",
         "Derived automatically",
-        "_irn_readonly_block",
     ):
-        assert marker in text, f"missing derived-field marker: {marker}"
+        assert removed not in text, (
+            f"the derived-fields panel must stay removed from the UI: {removed}"
+        )
     for forbidden in (
         'name="invoice_kind"',
         'name="tax_point_date"',
@@ -929,16 +1085,469 @@ def check_zefe_derived_fields_readonly() -> None:
 
 
 # --------------------------------------------------------------------------
+# 5. Simplified item import: single `code` column, detected classification
+# --------------------------------------------------------------------------
+
+
+def _run_zebe_simple_import_checks(db, user) -> None:
+    """Guard the simple import layout and its per-row error reporting.
+
+    Users upload `sku, name, description, code, unit_price, price_unit,
+    base_quantity`. The classification kind must be detected from the code
+    itself (HS `XXXX.XX` vs 4-digit ISIC) and mapped onto the stored
+    hsn_*/isic_* fields, with a concise category fallback. The older detailed
+    columns must keep working, and every rule violation must be reported
+    per row instead of aborting the import.
+    """
+    from auth import create_access_token
+    from routes.item_routes import (
+        CATEGORY_MAX_LENGTH,
+        DETAILED_IMPORT_COLUMNS,
+        IMPORT_COLUMNS,
+        SIMPLE_IMPORT_COLUMNS,
+        _process_import_rows,
+        concise_category,
+        detect_classification,
+        list_items,
+        normalize_import_row,
+    )
+
+    assert SIMPLE_IMPORT_COLUMNS == [
+        "sku",
+        "name",
+        "description",
+        "code",
+        "unit_price",
+        "price_unit",
+        "base_quantity",
+    ], f"the documented simple import layout changed: {SIMPLE_IMPORT_COLUMNS}"
+    assert IMPORT_COLUMNS == SIMPLE_IMPORT_COLUMNS, (
+        "the user-facing import columns must be the simple layout"
+    )
+    for legacy in ("hsn_code", "hsn_category", "isic_code", "isic_category"):
+        assert legacy in DETAILED_IMPORT_COLUMNS, (
+            f"the detailed layout must stay supported (missing {legacy})"
+        )
+
+    # --- code detection -------------------------------------------------
+    assert detect_classification("1006.10") == "product"
+    assert detect_classification(" 8471.30 ") == "product"
+    assert detect_classification("7020") == "service"
+    assert detect_classification("0112") == "service"
+    assert detect_classification("100610") is None
+    assert detect_classification("1006.1") is None
+    assert detect_classification("banana") is None
+    assert detect_classification("") is None
+    assert detect_classification(None) is None
+
+    # --- concise category fallback --------------------------------------
+    long_label = (
+        "Rice, semi-milled or wholly milled, whether or not polished; "
+        "broken rice of every description"
+    )
+    short = concise_category("", long_label)
+    assert short and len(short) <= CATEGORY_MAX_LENGTH, (
+        f"category fallback must stay concise (got {short!r})"
+    )
+    assert ";" not in short, "category fallback must keep one clause only"
+    assert concise_category("", None, "") == ""
+
+    # --- row normalization ----------------------------------------------
+    payload, err = normalize_import_row(
+        {
+            "SKU": "NORM-P1",
+            "Name": "Premium rice",
+            "code": "1006.10",
+            "unit_price": "1000",
+            "price_unit": "KGM",
+        }
+    )
+    assert not err, f"simple product row should normalize cleanly: {err}"
+    assert payload["hsn_code"] == "1006.10"
+    assert payload["hsn_category"] == "Premium rice", (
+        "the item name is the concise category fallback"
+    )
+    assert "isic_code" not in payload and "isic_category" not in payload
+
+    payload, err = normalize_import_row(
+        {
+            "name": "Advisory retainer",
+            "code": "7020",
+            "category": "Management consultancy",
+            "unit_price": "500",
+        }
+    )
+    assert not err, f"simple service row should normalize cleanly: {err}"
+    assert payload["isic_code"] == "7020"
+    assert payload["isic_category"] == "Management consultancy", (
+        "an explicit category column must win over the fallback"
+    )
+    assert "hsn_code" not in payload
+
+    payload, err = normalize_import_row(
+        {
+            "name": "Detailed legacy row",
+            "hsn_code": "1006.10",
+            "hsn_category": "Rice",
+            "isic_code": "",
+            "isic_category": "",
+            "unit_price": "10",
+            "price_unit": "EA",
+        }
+    )
+    assert not err, f"detailed columns must still work: {err}"
+    assert payload["hsn_code"] == "1006.10"
+    assert payload["hsn_category"] == "Rice"
+
+    _, err = normalize_import_row(
+        {"name": "Both", "hsn_code": "1006.10", "isic_code": "7020"}
+    )
+    assert "not both" in err, (
+        f"two classifications on one row must be rejected (got {err!r})"
+    )
+
+    _, err = normalize_import_row({"name": "No code", "unit_price": "1"})
+    assert err.startswith("code:"), f"a missing code must be named: {err!r}"
+
+    _, err = normalize_import_row({"name": "Bad code", "code": "banana"})
+    assert "code:" in err and "XXXX.XX" in err, (
+        f"an unrecognisable code must be explained: {err!r}"
+    )
+
+    # --- end to end import ----------------------------------------------
+    rows = [
+        {
+            "sku": "SIMPLE-P1",
+            "name": "Premium rice (simple)",
+            "description": "50kg bag",
+            "code": "1006.10",
+            "unit_price": "42000",
+            "price_unit": "KGM",
+            "base_quantity": "1",
+        },
+        {
+            "sku": "SIMPLE-S1",
+            "name": "Advisory retainer (simple)",
+            "description": "",
+            "code": "7020",
+            "unit_price": "1500",
+            "price_unit": "EA",
+            "base_quantity": "1",
+        },
+        {
+            "sku": "SIMPLE-BAD-CODE",
+            "name": "Unclassifiable",
+            "code": "12345",
+            "unit_price": "10",
+            "price_unit": "EA",
+        },
+        {
+            "sku": "SIMPLE-BAD-UNIT",
+            "name": "Legacy free text unit",
+            "code": "7020",
+            "unit_price": "10",
+            "price_unit": "NGN per 1",
+        },
+        {
+            "sku": "SIMPLE-BAD-PRICE",
+            "name": "Priced later",
+            "code": "7020",
+            "unit_price": "0",
+            "price_unit": "EA",
+        },
+        {
+            "sku": "SIMPLE-BAD-BASE",
+            "name": "Zero base quantity",
+            "code": "7020",
+            "unit_price": "10",
+            "price_unit": "EA",
+            "base_quantity": "0",
+        },
+    ]
+    result = _process_import_rows(rows, db=db, business_id=user.business_id)
+    assert result.created == 2, (
+        f"both valid simple rows should be created (got {result.created})"
+    )
+    assert result.skipped == 4, (
+        f"every invalid rule must skip its own row (got {result.skipped})"
+    )
+    assert len(result.errors) == 4, (
+        "each skipped row must carry one concise reason"
+    )
+    blob = " | ".join(result.errors)
+    for tag in (
+        "SIMPLE-BAD-CODE",
+        "SIMPLE-BAD-UNIT",
+        "SIMPLE-BAD-PRICE",
+        "SIMPLE-BAD-BASE",
+    ):
+        assert tag in blob, f"skipped row {tag} is not identifiable: {blob}"
+    assert "price_unit" in blob, (
+        f"the free text unit row must name price_unit: {blob}"
+    )
+    assert "unit_price" in blob, (
+        f"the zero price row must name unit_price: {blob}"
+    )
+    assert "base_quantity" in blob, (
+        f"the zero base quantity row must name base_quantity: {blob}"
+    )
+
+    token = create_access_token({"sub": str(user.id)})
+    page = list_items(
+        token=token, db=db, search="SIMPLE-P1", offset=0, limit=10
+    )
+    assert page["total"] == 1, "the imported product row was not persisted"
+    stored = page["items"][0]
+    assert stored.hsn_code == "1006.10" and stored.hsn_category
+    assert stored.isic_code is None
+    assert stored.price_unit == "KGM"
+
+    services = list_items(
+        token=token,
+        db=db,
+        search="SIMPLE-S1",
+        kind="service",
+        offset=0,
+        limit=10,
+    )
+    assert services["total"] == 1, "the imported service row was not persisted"
+    assert services["items"][0].isic_code == "7020"
+
+    # Re-importing the same SKUs updates instead of duplicating.
+    again = _process_import_rows(rows[:2], db=db, business_id=user.business_id)
+    assert again.updated == 2 and again.created == 0, (
+        "re-importing a known SKU must update it, not duplicate it"
+    )
+    print("  ✓ simple import code detection / per-row errors OK")
+
+
+# --------------------------------------------------------------------------
+# 6. Customer directory: import + active state parity with items
+# --------------------------------------------------------------------------
+
+
+def check_zefe_customer_directory_wiring() -> None:
+    """Customers must keep import, status filtering and restore flows."""
+    print("[zefe] customer import / active state wiring\u2026", flush=True)
+    _purge_shared_modules()
+    text = (Path(ZEFE) / "routes" / "customer_routes.py").read_text()
+    for marker in (
+        "/customers/import",
+        "/customers/import-overlay",
+        "/customers/bulk-confirm",
+        "/customers/{cid}/deactivate",
+        "/customers/{cid}/restore",
+        "import_customers",
+        "bulk_activate_customers",
+        "restore_customer",
+        "_status_badge",
+        "IMPORT_COLUMNS",
+        'Option("Inactive"',
+    ):
+        assert marker in text, f"customer directory lost wiring: {marker}"
+
+    backend = (Path(ZEBE) / "routes" / "customer_routes.py").read_text()
+    for marker in (
+        "/import",
+        "/bulk-delete",
+        "/bulk-activate",
+        "/{id}/restore",
+        "is_active",
+        "parse_import_file",
+    ):
+        assert marker in backend, f"customer API lost wiring: {marker}"
+    print("  ✓ customer import, deactivate, restore and filters are wired")
+
+
+# --------------------------------------------------------------------------
+# 7. Wizard stage 3: catalog first, one-off fallback
+# --------------------------------------------------------------------------
+
+
+def check_zefe_stage3_ux() -> None:
+    print("[zefe] stage 3 catalog / one-off UX\u2026", flush=True)
+    _purge_shared_modules()
+    text = (Path(ZEFE) / "routes" / "wizard_routes.py").read_text()
+    for marker in (
+        "_row_catalog_select",
+        "_row_adjust_cell",
+        "_catalog_block",
+        "_catalog_results",
+        "_saved_item_summary",
+        "_lookup_block_cleared",
+        "_line_from_catalog_item",
+        "/invoices/wizard/line/catalog",
+        "/invoices/wizard/line/catalog/apply",
+        "/invoices/wizard/step/3/rows/add",
+        "/invoices/wizard/line/{idx}/update",
+        "One-off line",
+    ):
+        assert marker in text, f"stage 3 lost wiring: {marker}"
+    assert "manual = not _is_catalog_line(line)" in text, (
+        "the line modal must know whether the row came from the catalog"
+    )
+    assert "if manual:" in text, (
+        "the classification lookup must only render for one-off lines"
+    )
+    for marker in ("discount_type", "fee_type", "percent", "flat"):
+        assert marker in text, (
+            f"per-row discount / fee controls lost wiring: {marker}"
+        )
+    print("  ✓ catalog selection, one-off path and row adjustments present")
+
+
+# --------------------------------------------------------------------------
+# 8. PDF: invoice lines print the item name only
+# --------------------------------------------------------------------------
+
+
+def check_zefe_pdf_item_name_only() -> None:
+    print("[zefe] PDF prints item name only\u2026", flush=True)
+    _purge_shared_modules()
+    text = (Path(ZEFE) / "services" / "pdf_service.py").read_text()
+    assert 'cell = f"<b>{name}</b>"' in text, (
+        "the PDF invoice line must print the item name only"
+    )
+    assert 'ln.get("description")' not in text, (
+        "the long classification description must stay off the PDF line"
+    )
+    assert 'item.get("description")' not in text, (
+        "the item description must stay off the PDF line"
+    )
+    assert "CLASSIFICATION CODE" in text, (
+        "the classification code column must stay on the PDF"
+    )
+    print("  ✓ invoice line renders the item name, code stays in its column")
+
+
+# --------------------------------------------------------------------------
+# 9. Docs and wording guardrails
+# --------------------------------------------------------------------------
+
+_EM_DASH = "\u2014"
+
+#: Files whose user-facing wording and comments must stay em dash free.
+EM_DASH_FREE_FILES: tuple[tuple[str, str], ...] = (
+    (ZEBE, "routes/item_routes.py"),
+    (ZEBE, "routes/customer_routes.py"),
+    (ZEBE, "services/import_utils.py"),
+    (str(REPO_ROOT.parent), "report.md"),
+)
+
+
+def check_no_em_dashes() -> None:
+    print("[docs] key files stay em dash free\u2026", flush=True)
+    offenders: list[str] = []
+    for base, rel in EM_DASH_FREE_FILES:
+        path = Path(base) / rel
+        if not path.exists():
+            raise AssertionError(f"missing file for the wording check: {rel}")
+        for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+            if _EM_DASH in line:
+                offenders.append(f"{rel}:{lineno}")
+    if offenders:
+        raise AssertionError("em dash found in: " + ", ".join(offenders[:10]))
+    print(f"  ✓ {len(EM_DASH_FREE_FILES)} files use plain punctuation")
+
+
+def check_import_column_docs() -> None:
+    """The simple import layout must be documented everywhere users see it."""
+    print("[docs] simple import columns documented\u2026", flush=True)
+    _purge_shared_modules()
+    frontend = (Path(ZEFE) / "routes" / "item_routes.py").read_text()
+    assert "code, unit_price, price_unit, " in frontend, (
+        "the item import overlay must list the simple columns"
+    )
+    assert "XXXX.XX" in frontend, (
+        "the overlay must explain how the classification code is detected"
+    )
+
+    endpoints_doc = (REPO_ROOT.parent / "endpoint.md").read_text()
+    assert (
+        "sku, name, description, code, unit_price, price_unit, base_quantity"
+        in endpoints_doc
+    ), "endpoint.md must document the simple import layout"
+
+    report = REPO_ROOT.parent / "report.md"
+    assert report.exists(), "report.md is missing from the app root"
+    report_text = report.read_text()
+    for marker in (
+        "```mermaid",
+        "tax_currency_code",
+        "INV{sequence}",
+        "/items/import",
+        "FastHTML",
+        "FastAPI",
+    ):
+        assert marker in report_text, f"report.md is missing: {marker}"
+    print("  ✓ overlay, endpoint reference and report.md agree")
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 
 
+def check_zebe_env_isolation() -> None:
+    """Guard the harness's own DB isolation before anything else runs.
+
+    This is the regression that broke the first cluster: a backend import that
+    happened before (or in spite of) the isolated SQLite DATABASE_URL tried to
+    load psycopg2 and blew up. Assert the guardrails directly:
+
+      * the isolated SQLite URL is configured and re-assertable;
+      * a ``load_dotenv(override=True)`` call — exactly what utils.database
+        does — can no longer replace it;
+      * importing zebe through :func:`_zebe_imports` yields a SQLite engine;
+      * purging drops the cached backend modules so the next check re-imports
+        them against its own environment.
+    """
+    print("[zebe] harness DB isolation…", flush=True)
+    db_path = _configure_zebe_env()
+    assert db_path, "no isolated SQLite database was configured"
+    assert os.environ["DATABASE_URL"] == f"sqlite:///{db_path}"
+
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(override=True)
+    except ImportError:
+        logging.getLogger("smoke_tests").debug("python-dotenv not installed")
+    assert os.environ["DATABASE_URL"] == f"sqlite:///{db_path}", (
+        "load_dotenv(override=True) clobbered the isolated DATABASE_URL — the "
+        "dotenv guard is not installed early enough"
+    )
+
+    with _zebe_imports():
+        import utils.database as zebe_database
+
+        assert zebe_database.is_sqlite, (
+            "utils.database did not select the SQLite branch"
+        )
+        assert str(zebe_database.engine.url).endswith(db_path), (
+            "zebe engine points at a different database file than the "
+            f"isolated one ({zebe_database.engine.url})"
+        )
+
+    for name in ("utils", "utils.database", "routes", "services", "config"):
+        assert name not in sys.modules, (
+            f"stale cached backend module survived the purge: {name}"
+        )
+    print("  ✓ SQLite forced pre-import, dotenv guarded, module cache purged")
+
+
 def main() -> int:
     checks = [
+        check_zebe_env_isolation,
         check_zefe_syntax,
         check_zefe_zebe_contract,
         check_wizard_onboarding_wiring,
         check_zefe_derived_fields_readonly,
+        check_zefe_customer_directory_wiring,
+        check_zefe_stage3_ux,
+        check_zefe_pdf_item_name_only,
+        check_no_em_dashes,
+        check_import_column_docs,
         check_zebe_outbound_serialization,
         check_zebe_outbound_route_behavior,
         check_zebe_derived_invoice_fields,
@@ -949,6 +1558,8 @@ def main() -> int:
         try:
             check()
         except AssertionError as e:
+            # A failed assertion is already reported below in full; a
+            # traceback here would only duplicate it.
             logging.exception("Unexpected error")
             failed += 1
             print(f"  ✗ {check.__name__}: {e}", file=sys.stderr)

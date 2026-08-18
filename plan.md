@@ -1,4 +1,5 @@
-## FIRS/NRS Live Validation Plan
-- [x] Simplify zebe invoice helpers by consolidating IRN and unit-code logic into the invoice service and removing undeployed legacy/fallback behavior.
-- [x] Correct and reconfirm the FIRS/NRS endpoint payload fields using the live sandbox validation error feedback.
-- [x] Rerun the approved sandbox invoice validation/sign/transmit flow once and report the final verified outcome and any remaining sandbox limitation.
+## Zefe/Zebe Consistency Plan
+- [x] Improve shared UX feedback and wording across Zefe, including reusable click/loading feedback, dashboard item count, invoice PDF item names only, item table alignment, em-dash cleanup, and removal of the stage 4 derived-fields panel while preserving the current slate/indigo compliance-workbench visual direction.
+- [x] Redesign invoice stage 3 around a cleaner inline line-item workflow with catalog selection, editable selected-item details, discount and fee inputs, add/remove rows, and a one-off item path without showing classification lookup after a catalog item is selected.
+- [x] Add customer import, active/inactive filtering, and deactivation/restore behavior consistent with Items, including backend support and pagination-aware frontend flows.
+- [x] Simplify and harden item import code detection and validation, then update smoke checks and create report.md documenting architecture, endpoints, schemas, integrations, payload validation, and system wiring.

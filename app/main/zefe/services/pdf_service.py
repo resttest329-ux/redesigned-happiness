@@ -190,8 +190,8 @@ def build_invoice_pdf(
 
     elements = []
 
-    issue_date = _safe(invoice.get("issue_date")) or "—"
-    due_date = _safe(invoice.get("due_date")) or "—"
+    issue_date = _safe(invoice.get("issue_date")) or "-"
+    due_date = _safe(invoice.get("due_date")) or "-"
     currency = _safe(invoice.get("document_currency_code")) or "NGN"
     status = _safe(
         (log_entry or {}).get("payment_status")
@@ -381,10 +381,9 @@ def build_invoice_pdf(
             total = qty * unit
         code = _safe_str(ln.get("hsn_code") or ln.get("isic_code"))
         name = _safe_str(item.get("name"))
-        desc = _safe_str(item.get("description"))
+        # Only the item name is printed on the PDF line; the longer
+        # classification description stays out of the customer-facing document.
         cell = f"<b>{name}</b>"
-        if desc:
-            cell += f'<br/><font size="7.5" color="#64748b">{desc}</font>'
         line_data.append(
             [
                 Paragraph(_safe_str(i), body),

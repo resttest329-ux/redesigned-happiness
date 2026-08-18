@@ -31,7 +31,7 @@ logger = logging.getLogger("zefe")
 
 async def lifespan(app):
     await api_client.startup()
-    logger.info("zefe started — backend=%s", api_client.BACKEND_URL)
+    logger.info("zefe started, backend=%s", api_client.BACKEND_URL)
     try:
         yield
     finally:

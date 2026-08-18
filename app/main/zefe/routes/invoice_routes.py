@@ -1053,7 +1053,7 @@ def register_routes(rt) -> None:
             title="Transmit this invoice to FIRS?",
             message=(
                 "Transmission sends the signed invoice to the FIRS gateway. "
-                "Once transmitted it cannot be recalled \u2014 corrections must "
+                "Once transmitted it cannot be recalled. Corrections must "
                 "be issued as a new invoice with a fresh IRN."
             ),
             confirm_control=confirm_btn,
@@ -1116,7 +1116,7 @@ def register_routes(rt) -> None:
 
         message = (
             f"Marking this invoice as {new_status} is final on the FIRS "
-            "gateway \u2014 the payment status can never be changed again. To "
+            "gateway. The payment status can never be changed again. To "
             "correct it later you must issue a new invoice with a fresh IRN."
             if is_final
             else (

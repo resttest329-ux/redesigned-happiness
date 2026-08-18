@@ -161,7 +161,7 @@ def _unit_select(value: str = DEFAULT_UNIT_CODE) -> Div:
             cls="relative",
         ),
         guidance_text(
-            "Official 2–3 character UN/ECE unit code sent to FIRS "
+            "Official 2-3 character UN/ECE unit code sent to FIRS "
             "(EA = each). Free text is not accepted."
         ),
         cls="mb-4",
@@ -550,8 +550,7 @@ def _item_form_modal(item: dict | None = None, error: str = "") -> Div:
                 placeholder="0.00",
                 required=True,
                 min="0.01",
-                step="0.01",
-                helper="Price for one unit — must be greater than zero.",
+                helper="Price for one unit. Must be greater than zero.",
             ),
             _unit_select(item.get("price_unit") or DEFAULT_UNIT_CODE),
             cls="grid grid-cols-1 md:grid-cols-2 gap-x-4",
@@ -581,7 +580,7 @@ def _item_form_modal(item: dict | None = None, error: str = "") -> Div:
             Hidden(name="item_id", value=item_id),
             _modal_header(
                 "Edit item" if is_edit else "New item",
-                "Reusable invoice line — quantity is asked for per invoice.",
+                "Reusable invoice line. Quantity is asked for per invoice.",
             ),
             Div(*body_children, cls="px-6 py-5 max-h-[70vh] overflow-auto"),
             _modal_footer(
@@ -800,7 +799,7 @@ def _item_table(items: list[dict], active: bool) -> Div:
         "Item",
         "Type",
         "Classification",
-        "Unit price",
+        ("Unit price", "right"),
         "Unit",
         "Status",
         "",
@@ -1679,7 +1678,7 @@ def register_routes(rt) -> None:
                 P(
                     f'"{name}" will be removed from your catalog for good. '
                     "This item may still be referenced by past invoices, so "
-                    "Deactivate is the safer choice \u2014 it stops the item "
+                    "Deactivate is the safer choice: it stops the item "
                     "appearing on new invoices while keeping it for reference.",
                     cls="text-sm text-slate-600 text-center mt-2 leading-relaxed",
                 ),
@@ -1840,7 +1839,7 @@ def register_routes(rt) -> None:
             "delete": (
                 f"Delete {count} {noun} permanently?",
                 f"{count} {noun} will be removed from your catalog for good. "
-                "This cannot be undone — use Deactivate if you may need them "
+                "This cannot be undone. Use Deactivate if you may need them "
                 "later.",
                 f"Delete {count} {noun}",
                 _DANGER_BTN,
@@ -1945,8 +1944,8 @@ def register_routes(rt) -> None:
         if redirect:
             return redirect
         columns = (
-            "sku, name, description, hsn_code, hsn_category, isic_code, "
-            "isic_category, unit_price, price_unit, base_quantity"
+            "sku, name, description, code, unit_price, price_unit, "
+            "base_quantity"
         )
         body = [
             alert("error", error, cls="mb-4") if error else "",
@@ -1977,9 +1976,12 @@ def register_routes(rt) -> None:
                     ),
                 ),
                 guidance_text(
-                    "Rows matching an existing SKU are updated; invalid rows "
-                    "are skipped with a reason and never abort the import. "
-                    "Price units must be official codes such as EA or KGM."
+                    "Use one classification code per item in the code column: "
+                    "HS format XXXX.XX for a product, or 4 digits for a "
+                    "service. Rows matching an existing SKU are updated. "
+                    "Invalid rows are skipped with a reason and never abort "
+                    "the import. Price units must be official codes such as "
+                    "EA or KGM."
                 ),
                 cls="mb-2",
             ),
@@ -2050,7 +2052,10 @@ def register_routes(rt) -> None:
         updated = int(res.get("updated", 0) or 0)
         skipped = int(res.get("skipped", 0) or 0)
         errors = res.get("errors") or []
-        msg = f"Import complete — {created} created, {updated} updated, {skipped} skipped."
+        msg = (
+            f"Import complete: {created} created, {updated} updated, "
+            f"{skipped} skipped."
+        )
         query = "/items?success=" + urllib.parse.quote_plus(msg)
         if errors:
             detail = "; ".join(str(e) for e in errors[:3])

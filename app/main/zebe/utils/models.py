@@ -62,6 +62,12 @@ class User(Base):
 
 
 class Customer(Base):
+    """A workspace customer.
+
+    Customers are soft-deleted (``is_active``) exactly like catalog items so
+    removing one can never break a pending draft or rewrite invoice history.
+    """
+
     __tablename__ = "customers"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
@@ -76,9 +82,19 @@ class Customer(Base):
     country: Mapped[str]
     state: Mapped[str]
     lga: Mapped[Optional[str]] = mapped_column(nullable=True)
+    is_active: Mapped[bool] = mapped_column(default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(timezone.utc)
     )
+    updated_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
+
+    def __repr__(self):
+        return (
+            f"Customer: {self.party_name} | TIN: {self.tin} | "
+            f"active?: {self.is_active}"
+        )
 
 
 class InvoiceLog(Base):

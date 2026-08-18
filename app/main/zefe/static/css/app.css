@@ -55,3 +55,82 @@ h1, h2, h3, h4, h5, h6 {
 .animate-fade-in-up {
   animation: zefe-fade-in-up 160ms ease-out both;
 }
+
+/* ------------------------------------------------------------------ */
+/* Shared click / loading feedback                                     */
+/* Every navigation, form submit and htmx request raises the top       */
+/* progress bar plus a bottom-right activity pill, so an action never  */
+/* looks like it did nothing.                                          */
+/* ------------------------------------------------------------------ */
+
+.zefe-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 9999;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.zefe-progress.is-active {
+  opacity: 1;
+}
+.zefe-progress-bar {
+  height: 100%;
+  width: 32%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #c7d2fe 0%, #4f46e5 60%, #4338ca 100%);
+}
+.zefe-progress.is-active .zefe-progress-bar {
+  animation: zefe-progress-slide 1.05s ease-in-out infinite;
+}
+@keyframes zefe-progress-slide {
+  0%   { margin-left: -34%; width: 34%; }
+  50%  { margin-left: 36%;  width: 48%; }
+  100% { margin-left: 100%; width: 34%; }
+}
+
+.zefe-activity {
+  position: fixed;
+  bottom: 1.25rem;
+  right: 1.25rem;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.75rem;
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+.zefe-activity.is-active {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.zefe-pressed {
+  transform: scale(0.985);
+  opacity: 0.85;
+}
+
+a, button, [role="button"] {
+  transition: background-color 120ms ease, border-color 120ms ease,
+    color 120ms ease, transform 90ms ease, opacity 90ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .zefe-progress.is-active .zefe-progress-bar {
+    animation: none;
+    width: 100%;
+  }
+  .zefe-pressed {
+    transform: none;
+  }
+}

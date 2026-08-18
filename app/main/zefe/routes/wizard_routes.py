@@ -86,91 +86,10 @@ def _default_price_unit(wizard: dict) -> str:
     return DEFAULT_UNIT_CODE
 
 
-def _derived_invoice_kind(wizard: dict) -> str:
-    """Mirror of the backend derivation, for read-only display only."""
-    return "B2B" if str(wizard.get("customer_tin") or "").strip() else "B2C"
-
-
-def _derived_field_row(label: str, value: str, note: str) -> Div:
-    return Div(
-        Div(
-            P(
-                label,
-                cls=(
-                    "text-xs uppercase text-slate-500 font-semibold "
-                    "tracking-wider"
-                ),
-            ),
-            P(note, cls="text-[11px] text-slate-500 mt-0.5 leading-relaxed"),
-            cls="min-w-0 flex-1",
-        ),
-        Span(
-            value or "\u2014",
-            cls=(
-                "shrink-0 inline-flex items-center px-2.5 py-1 rounded-lg "
-                "text-xs font-semibold font-mono bg-slate-50 text-slate-900 "
-                "border border-slate-200"
-            ),
-        ),
-        cls=(
-            "flex items-start justify-between gap-4 py-2.5 "
-            "border-b border-slate-100 last:border-b-0"
-        ),
-    )
-
-
-def _derived_fields_card(wizard: dict) -> Div:
-    """Read-only summary of every field Zetamind derives for you.
-
-    None of these are editable anywhere in the wizard — the backend owns them
-    so the FIRS payload always stays internally consistent.
-    """
-    return card(
-        Div(
-            icon("check-circle", cls="h-4 w-4 text-indigo-600"),
-            Div(
-                H3(
-                    "Derived automatically",
-                    cls="text-base font-semibold text-slate-900",
-                ),
-                P(
-                    "Read-only — computed from what you already entered. "
-                    "No input needed.",
-                    cls="text-xs text-slate-500 mt-0.5",
-                ),
-                cls="min-w-0",
-            ),
-            cls="flex items-center gap-2 mb-3",
-        ),
-        Div(
-            _derived_field_row(
-                "Invoice kind",
-                _derived_invoice_kind(wizard),
-                "B2B because this customer has a TIN.",
-            ),
-            _derived_field_row(
-                "Tax point date",
-                wizard.get("issue_date", "") or "",
-                "Always matches the invoice issue date.",
-            ),
-            _derived_field_row(
-                "Tax currency",
-                "NGN",
-                "FIRS reports VAT in Naira regardless of invoice currency.",
-            ),
-            _derived_field_row(
-                "Initial payment status",
-                "PENDING",
-                "Set on creation; update it after the invoice is issued.",
-            ),
-            _derived_field_row(
-                "IRN",
-                wizard.get("irn", "") or "",
-                "Sequence, Service ID and date segment are generated for you.",
-            ),
-            cls="flex flex-col",
-        ),
-    )
+# NOTE: invoice_kind, tax_point_date, tax_currency_code, payment_status and
+# the IRN sequence remain fully derived server-side (see
+# zebe/services/invoice_service.py). They are never collected as wizard inputs
+# and are no longer surfaced as a read-only panel in step 4.
 
 
 def _unit_select_field(value: str = DEFAULT_UNIT_CODE) -> Div:
@@ -179,7 +98,7 @@ def _unit_select_field(value: str = DEFAULT_UNIT_CODE) -> Div:
     opts = []
     for code, label in unit_code_options():
         opts.append(
-            Option(f"{code} — {label}", value=code, selected=(code == current))
+            Option(f"{code} - {label}", value=code, selected=(code == current))
         )
     return Div(
         Label(
@@ -210,7 +129,7 @@ def _unit_select_field(value: str = DEFAULT_UNIT_CODE) -> Div:
             cls="relative",
         ),
         guidance_text(
-            "Official 2–3 character UN/ECE unit code (EA = each). "
+            "Official 2-3 character UN/ECE unit code (EA = each). "
             "FIRS rejects free text such as 'NGN per 1'."
         ),
         cls="mb-4",
@@ -524,7 +443,7 @@ async def _load_step1_lookups(jwt: str, sid: str):
         )
         currencies = (
             [
-                (c["code"], f"{c['code']} — {c.get('name', '')}")
+                (c["code"], f"{c['code']} - {c.get('name', '')}")
                 for c in cur_r
                 if isinstance(c, dict)
             ]
@@ -554,8 +473,8 @@ async def _load_step1_lookups(jwt: str, sid: str):
 
     if not currencies:
         currencies = [
-            ("NGN", "NGN — Nigerian Naira"),
-            ("USD", "USD — US Dollar"),
+            ("NGN", "NGN - Nigerian Naira"),
+            ("USD", "USD - US Dollar"),
         ]
     return types, means, currencies
 
@@ -640,7 +559,7 @@ def _irn_readonly_block(irn: str) -> Div:
         ),
         Div(
             Span(
-                irn or "—",
+                irn or "-",
                 cls="font-mono text-sm text-slate-900 break-all min-w-0 flex-1",
             ),
             Span(
@@ -750,7 +669,7 @@ def _supplier_summary(profile: dict) -> Div:
                 lbl,
                 cls="text-xs uppercase text-slate-500 font-semibold tracking-wider",
             ),
-            P(val or "—", cls="text-sm text-slate-900 mt-1"),
+            P(val or "-", cls="text-sm text-slate-900 mt-1"),
         )
 
     return Div(
@@ -795,7 +714,7 @@ def _supplier_summary(profile: dict) -> Div:
 def _customer_picker(customers: list, selected_id: str = "") -> Div:
     options = [
         Option(
-            "— Choose a saved customer (optional) —",
+            "Choose a saved customer (optional)",
             value="",
             selected=not selected_id,
         )
@@ -847,7 +766,7 @@ def _selected_customer_summary(wizard: dict) -> Div:
                 label,
                 cls="text-xs uppercase text-slate-500 font-semibold tracking-wider",
             ),
-            P(value or "—", cls="text-sm text-slate-900 mt-1 truncate"),
+            P(value or "-", cls="text-sm text-slate-900 mt-1 truncate"),
         )
 
     return Div(
@@ -1248,58 +1167,558 @@ def _render_step2(
     )
 
 
-def _line_row(idx: int, line: dict) -> Tr:
-    qty = _safe_float(line.get("invoiced_quantity", 1))
-    price = _safe_float(line.get("price_amount", 0))
-    total = _line_extension(line)
-    code_label = ""
+_ROW_INPUT_CLS = (
+    "w-full px-2 py-1.5 bg-white text-slate-900 border border-slate-300 "
+    "rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+)
+_ROW_SELECT_CLS = (
+    "w-full appearance-none px-2 py-1.5 pr-7 bg-white text-slate-900 "
+    "border border-slate-300 rounded-lg text-sm focus:outline-none "
+    "focus:ring-2 focus:ring-indigo-500"
+)
+_ROW_CHEV_CLS = (
+    "h-3.5 w-3.5 text-slate-400 absolute right-2 top-1/2 "
+    "-translate-y-1/2 pointer-events-none"
+)
+_ROW_TD = "px-3 py-2.5 align-top"
+_ROW_TH = (
+    "px-3 py-2.5 text-left text-[11px] font-semibold text-slate-500 "
+    "uppercase tracking-wider"
+)
+_ROW_TH_RIGHT = (
+    "px-3 py-2.5 text-right text-[11px] font-semibold text-slate-500 "
+    "uppercase tracking-wider"
+)
+
+
+def _fmt_num(value, default: str = "") -> str:
+    """Render a stored numeric line value for an input, without noise."""
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        return f"{float(value):g}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _line_catalog_id(line: dict) -> str:
+    return str((line or {}).get("catalog_item_id") or "").strip()
+
+
+def _is_catalog_line(line: dict) -> bool:
+    return bool(_line_catalog_id(line))
+
+
+def _empty_row_line(default_unit: str = DEFAULT_UNIT_CODE) -> dict:
+    """A blank invoice row, ready for a saved item or a one-off line."""
+    return {
+        "name": "",
+        "description": "",
+        "sellers_item_identification": "",
+        "hsn_code": "",
+        "product_category": "",
+        "isic_code": "",
+        "service_category": "",
+        "invoiced_quantity": 1.0,
+        "price_amount": 0.0,
+        "price_unit": coerce_unit_code(default_unit),
+        "base_quantity": 1.0,
+        "discount_rate": 0.0,
+        "discount_amount": 0.0,
+        "fee_rate": 0.0,
+        "fee_amount": 0.0,
+        "catalog_item_id": "",
+    }
+
+
+def _normalize_line(line: dict, default_unit: str = DEFAULT_UNIT_CODE) -> dict:
+    """Coerce a stored line into the exact shape the backend expects.
+
+    Only the wizard-local ``catalog_item_id`` is added; every FIRS/NRS field
+    keeps its existing name, type and meaning so assembly, validation and the
+    official unit codes behave exactly as before.
+    """
+    out = dict(line or {})
+    qty = _safe_float(out.get("invoiced_quantity"), 1.0)
+    out["invoiced_quantity"] = qty
+    out["price_amount"] = _safe_float(out.get("price_amount"), 0.0)
+    base = _safe_float(out.get("base_quantity"), 1.0)
+    out["base_quantity"] = base if base > 0 else 1.0
+    for key in (
+        "discount_rate",
+        "discount_amount",
+        "fee_rate",
+        "fee_amount",
+    ):
+        out[key] = _safe_float(out.get(key), 0.0)
+    out["price_unit"] = coerce_unit_code(out.get("price_unit"), default_unit)
+    for key in (
+        "name",
+        "description",
+        "sellers_item_identification",
+        "hsn_code",
+        "product_category",
+        "isic_code",
+        "service_category",
+    ):
+        out[key] = str(out.get(key) or "").strip()
+    out["catalog_item_id"] = _line_catalog_id(out)
+    return out
+
+
+def _to_one_off(line: dict) -> dict:
+    """Detach a row from its saved item so it can be edited freely."""
+    out = dict(line or {})
+    out["catalog_item_id"] = ""
+    out["hsn_code"] = ""
+    out["product_category"] = ""
+    out["isic_code"] = ""
+    out["service_category"] = ""
+    return out
+
+
+def _adjust_type(line: dict, prefix: str) -> str:
+    if _safe_float(line.get(f"{prefix}_rate")) > 0:
+        return "percent"
+    if _safe_float(line.get(f"{prefix}_amount")) > 0:
+        return "flat"
+    return "none"
+
+
+def _adjust_value(line: dict, prefix: str) -> str:
+    kind = _adjust_type(line, prefix)
+    if kind == "percent":
+        return _fmt_num(line.get(f"{prefix}_rate"), "")
+    if kind == "flat":
+        return _fmt_num(line.get(f"{prefix}_amount"), "")
+    return ""
+
+
+def _apply_row_form(
+    line: dict,
+    form,
+    default_unit: str,
+    ignore: tuple[str, ...] = (),
+) -> tuple[dict, str]:
+    """Apply the inline row inputs onto a line. Returns (line, error)."""
+    out = dict(line or {})
+    err = ""
+
+    if "quantity" not in ignore:
+        raw = form.get("quantity")
+        if raw is not None and str(raw).strip() != "":
+            qty = _safe_float(raw, 0.0)
+            if qty < 0:
+                err = err or "Quantity cannot be negative."
+            else:
+                out["invoiced_quantity"] = qty
+
+    if "unit_price" not in ignore:
+        raw = form.get("unit_price")
+        if raw is not None and str(raw).strip() != "":
+            price = _safe_float(raw, 0.0)
+            if price < 0:
+                err = err or "Unit price cannot be negative."
+            else:
+                out["price_amount"] = price
+
+    for prefix, label in (("discount", "Discount"), ("fee", "Fee")):
+        kind = (form.get(f"{prefix}_type") or "none").strip().lower()
+        if kind not in ("none", "percent", "flat"):
+            kind = "none"
+        raw = form.get(f"{prefix}_value")
+        value = (
+            _safe_float(raw, 0.0)
+            if raw is not None and str(raw).strip() != ""
+            else 0.0
+        )
+        if kind == "none":
+            out[f"{prefix}_rate"] = 0.0
+            out[f"{prefix}_amount"] = 0.0
+            continue
+        if value < 0:
+            err = err or f"{label} cannot be negative."
+            continue
+        if kind == "percent":
+            if value > 100:
+                err = err or f"{label} percent must be between 0 and 100."
+                continue
+            out[f"{prefix}_rate"] = value
+            out[f"{prefix}_amount"] = 0.0
+        else:
+            out[f"{prefix}_rate"] = 0.0
+            out[f"{prefix}_amount"] = value
+
+    return out, err
+
+
+def _row_update_attrs(idx: int) -> dict:
+    return {
+        "hx_post": f"/invoices/wizard/line/{idx}/update",
+        "hx_trigger": "change",
+        "hx_target": "#line-rows",
+        "hx_swap": "outerHTML",
+        "hx_include": f"#line-row-{idx} [data-row-field]",
+        "data_row_field": "1",
+    }
+
+
+def _row_catalog_select(idx: int, line: dict, catalog_items: list[dict]) -> Div:
+    current = _line_catalog_id(line)
+    opts = [Option("One-off line", value="", selected=(current == ""))]
+    known: set[str] = set()
+    for item in catalog_items or []:
+        iid = str((item or {}).get("id", "") or "")
+        if not iid:
+            continue
+        known.add(iid)
+        label = str(item.get("name", "") or "").strip() or f"Item {iid}"
+        sku = str(item.get("sku", "") or "").strip()
+        if sku:
+            label = f"{label} ({sku})"
+        opts.append(Option(label, value=iid, selected=(iid == current)))
+    if current and current not in known:
+        fallback = str(line.get("name", "") or "").strip() or "Saved item"
+        opts.append(
+            Option(f"{fallback} (unavailable)", value=current, selected=True)
+        )
+    return Div(
+        Select(
+            *opts,
+            name="catalog_item_id",
+            aria_label=f"Saved item for line {idx + 1}",
+            **_row_update_attrs(idx),
+            cls=_ROW_SELECT_CLS,
+        ),
+        icon("chevron-down", cls=_ROW_CHEV_CLS),
+        cls="relative",
+    )
+
+
+def _row_classification_badge(line: dict) -> Span:
     if line.get("hsn_code"):
-        code_label = f"HS {line['hsn_code']}"
+        text = f"HS {line['hsn_code']}"
     elif line.get("isic_code"):
-        code_label = f"ISIC {line['isic_code']}"
+        text = f"ISIC {line['isic_code']}"
+    else:
+        return Span(
+            "Details needed",
+            cls=(
+                "inline-flex items-center px-2 py-0.5 rounded-md text-[10px] "
+                "font-semibold uppercase tracking-wider bg-amber-50 "
+                "text-amber-700 border border-amber-200 w-fit shrink-0"
+            ),
+        )
+    return Span(
+        text,
+        cls=(
+            "inline-flex items-center px-2 py-0.5 rounded-md text-[10px] "
+            "font-mono font-semibold bg-emerald-50 text-emerald-700 "
+            "border border-emerald-200 w-fit shrink-0"
+        ),
+    )
+
+
+def _row_adjust_cell(idx: int, line: dict, prefix: str, label: str) -> Td:
+    kind = _adjust_type(line, prefix)
+    value_attrs = {
+        "id": f"line-{idx}-{prefix}-value",
+        "name": f"{prefix}_value",
+        "type": "number",
+        "value": _adjust_value(line, prefix),
+        "min": "0",
+        "step": "0.01",
+        "placeholder": "0",
+        "aria_label": f"{label} value for line {idx + 1}",
+    }
+    if kind == "none":
+        value_attrs["disabled"] = True
+    return Td(
+        Div(
+            Div(
+                Select(
+                    Option("None", value="none", selected=(kind == "none")),
+                    Option("%", value="percent", selected=(kind == "percent")),
+                    Option("Fixed", value="flat", selected=(kind == "flat")),
+                    name=f"{prefix}_type",
+                    aria_label=f"{label} type for line {idx + 1}",
+                    **_row_update_attrs(idx),
+                    cls=_ROW_SELECT_CLS,
+                ),
+                icon("chevron-down", cls=_ROW_CHEV_CLS),
+                cls="relative w-[6.5rem] shrink-0",
+            ),
+            Input(
+                **value_attrs,
+                **_row_update_attrs(idx),
+                cls=f"{_ROW_INPUT_CLS} w-20 shrink-0",
+            ),
+            cls="flex items-center gap-1.5",
+        ),
+        cls=_ROW_TD,
+    )
+
+
+def _line_row(
+    idx: int, line: dict, catalog_items: list[dict], currency: str
+) -> Tr:
+    qty = _safe_float(line.get("invoiced_quantity", 1), 1.0)
+    price = _safe_float(line.get("price_amount", 0))
+    unit = coerce_unit_code(line.get("price_unit"))
+    total = _line_extension(line)
+    name = str(line.get("name", "") or "").strip()
     return Tr(
         Td(
+            Span(
+                idx + 1,
+                cls="text-xs font-semibold text-slate-400",
+            ),
+            cls="px-3 py-4 align-top w-8",
+        ),
+        Td(
+            _row_catalog_select(idx, line, catalog_items),
+            Div(
+                _row_classification_badge(line),
+                Span(
+                    name or "No details yet",
+                    cls="text-xs text-slate-500 truncate min-w-0",
+                ),
+                cls="flex items-center gap-2 mt-1.5 min-w-0",
+            ),
+            cls=f"{_ROW_TD} min-w-[15rem]",
+        ),
+        Td(
+            Input(
+                id=f"line-{idx}-quantity",
+                name="quantity",
+                type="number",
+                value=_fmt_num(qty, "1"),
+                min="0",
+                step="1",
+                aria_label=f"Quantity for line {idx + 1}",
+                **_row_update_attrs(idx),
+                cls=f"{_ROW_INPUT_CLS} w-20",
+            ),
+            cls=_ROW_TD,
+        ),
+        Td(
+            Div(
+                Input(
+                    id=f"line-{idx}-unit-price",
+                    name="unit_price",
+                    type="number",
+                    value=_fmt_num(price, "0"),
+                    min="0",
+                    step="0.01",
+                    aria_label=f"Unit price for line {idx + 1}",
+                    **_row_update_attrs(idx),
+                    cls=f"{_ROW_INPUT_CLS} w-24",
+                ),
+                Span(
+                    unit,
+                    title=unit_code_label(unit),
+                    cls=(
+                        "inline-flex items-center px-1.5 py-0.5 rounded-md "
+                        "text-[10px] font-mono font-semibold bg-slate-100 "
+                        "text-slate-600 border border-slate-200 shrink-0"
+                    ),
+                ),
+                cls="flex items-center gap-1.5",
+            ),
+            cls=_ROW_TD,
+        ),
+        _row_adjust_cell(idx, line, "discount", "Discount"),
+        _row_adjust_cell(idx, line, "fee", "Fee"),
+        Td(
             P(
-                line.get("name", "(unnamed)"),
+                f"{currency} {total:,.2f}",
+                cls=(
+                    "text-sm font-semibold text-slate-900 text-right "
+                    "whitespace-nowrap"
+                ),
+            ),
+            cls=_ROW_TD,
+        ),
+        Td(
+            Div(
+                Button(
+                    icon("eye", cls="h-4 w-4"),
+                    type="button",
+                    title="View or edit line details",
+                    aria_label=f"View details for line {idx + 1}",
+                    hx_get=f"/invoices/wizard/line/{idx}/edit",
+                    hx_target="#wizard-modal-area",
+                    hx_swap="innerHTML",
+                    cls=(
+                        "p-2 rounded-lg text-slate-400 hover:bg-slate-100 "
+                        "hover:text-indigo-600 transition-colors"
+                    ),
+                ),
+                Button(
+                    icon("trash", cls="h-4 w-4"),
+                    type="button",
+                    title="Delete line",
+                    aria_label=f"Delete line {idx + 1}",
+                    hx_post="/invoices/wizard/step/3/remove",
+                    hx_vals=json.dumps({"idx": str(idx)}),
+                    hx_target="#line-rows",
+                    hx_swap="outerHTML",
+                    cls=(
+                        "p-2 rounded-lg text-slate-400 hover:bg-rose-50 "
+                        "hover:text-rose-600 transition-colors"
+                    ),
+                ),
+                cls="flex items-center justify-end gap-1",
+            ),
+            cls="px-3 py-2.5 align-top text-right w-24",
+        ),
+        id=f"line-row-{idx}",
+        cls=(
+            "border-b border-slate-100 last:border-b-0 "
+            "hover:bg-slate-50/50 transition-colors"
+        ),
+    )
+
+
+def _add_row_button() -> Div:
+    return Div(
+        Button(
+            icon("plus", cls="h-4 w-4"),
+            Span("Add row"),
+            type="button",
+            hx_post="/invoices/wizard/step/3/rows/add",
+            hx_target="#line-rows",
+            hx_swap="outerHTML",
+            cls=(
+                "inline-flex items-center gap-2 px-3 py-2 bg-white "
+                "border border-slate-300 text-slate-700 text-sm font-medium "
+                "rounded-lg hover:bg-slate-50 hover:text-indigo-600 "
+                "hover:border-indigo-300 transition-colors"
+            ),
+        ),
+        cls="mt-3",
+    )
+
+
+def _line_rows_table(wizard: dict, catalog_items: list[dict]) -> Div:
+    lines = (wizard.get("step3", {}) or {}).get("lines", []) or []
+    currency = wizard.get("document_currency_code", "NGN") or "NGN"
+    if not lines:
+        return Div(
+            icon("receipt", cls="h-9 w-9 text-slate-300 mx-auto mb-3"),
+            P(
+                "No lines yet",
+                cls="text-base font-semibold text-slate-900",
+            ),
+            P(
+                "Add a row, then pick a saved item or open the row to enter "
+                "a one-off line.",
+                cls="text-sm text-slate-500 mt-1",
+            ),
+            cls=(
+                "text-center py-12 bg-white rounded-xl border "
+                "border-dashed border-slate-300"
+            ),
+        )
+    return Div(
+        Table(
+            Thead(
+                Tr(
+                    Th("#", cls=f"{_ROW_TH} w-8"),
+                    Th("Item", cls=_ROW_TH),
+                    Th("Qty", cls=_ROW_TH),
+                    Th("Unit price", cls=_ROW_TH),
+                    Th("Discount", cls=_ROW_TH),
+                    Th("Fee", cls=_ROW_TH),
+                    Th("Line total", cls=_ROW_TH_RIGHT),
+                    Th("", cls="px-3 py-2.5"),
+                    cls="border-b border-slate-200 bg-slate-50",
+                ),
+            ),
+            Tbody(
+                *[
+                    _line_row(i, line, catalog_items, currency)
+                    for i, line in enumerate(lines)
+                ]
+            ),
+            cls="table-auto w-full",
+        ),
+        cls="overflow-x-auto rounded-xl border border-slate-200 bg-white",
+    )
+
+
+def _rows_container(
+    wizard: dict,
+    catalog_items: list[dict],
+    banner=None,
+    oob: bool = False,
+) -> Div:
+    attrs: dict = {"id": "line-rows"}
+    if oob:
+        attrs["hx_swap_oob"] = "outerHTML"
+    return Div(
+        banner or "",
+        _line_rows_table(wizard, catalog_items),
+        _add_row_button(),
+        **attrs,
+    )
+
+
+def _totals_card(wizard: dict, oob: bool = False) -> Div:
+    lines = (wizard.get("step3", {}) or {}).get("lines", []) or []
+    subtotal = sum(_line_extension(line) for line in lines)
+    tax = subtotal * TAX_RATE
+    total = subtotal + tax
+    currency = wizard.get("document_currency_code", "NGN") or "NGN"
+    attrs: dict = {"id": "line-totals"}
+    if oob:
+        attrs["hx_swap_oob"] = "outerHTML"
+    return Div(
+        Div(
+            P("Subtotal", cls="text-sm text-slate-600"),
+            P(
+                f"{currency} {subtotal:,.2f}",
                 cls="text-sm font-medium text-slate-900",
             ),
-            P(code_label, cls="text-xs text-slate-500 font-mono")
-            if code_label
-            else "",
-            cls="px-3 py-3",
+            cls="flex items-center justify-between py-1.5",
         ),
-        Td(
-            f"{qty:.2f}",
-            cls="px-3 py-3 text-sm text-slate-700 text-right whitespace-nowrap",
-        ),
-        Td(
-            f"{price:.2f}",
-            cls="px-3 py-3 text-sm text-slate-700 text-right whitespace-nowrap",
-        ),
-        Td(
-            f"{total:.2f}",
-            cls="px-3 py-3 text-sm font-medium text-slate-900 text-right whitespace-nowrap",
-        ),
-        Td(
-            Form(
-                Button(
-                    icon("x", cls="h-4 w-4"),
-                    type="submit",
-                    title="Remove item",
-                    onclick="event.stopPropagation();",
-                    cls="p-2 rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition-colors",
-                ),
-                Hidden(name="idx", value=str(idx)),
-                method="post",
-                action="/invoices/wizard/step/3/remove",
-                cls="inline",
+        Div(
+            P("VAT (7.5%)", cls="text-sm text-slate-600"),
+            P(
+                f"{currency} {tax:,.2f}",
+                cls="text-sm font-medium text-slate-900",
             ),
-            cls="px-3 py-3 text-right",
+            cls="flex items-center justify-between py-1.5",
         ),
-        hx_get=f"/invoices/wizard/line/{idx}/edit",
-        hx_target="#wizard-modal-area",
-        hx_swap="innerHTML",
-        cls="border-b border-slate-100 hover:bg-slate-50/50 cursor-pointer transition-colors",
+        Div(
+            P(
+                "Total payable",
+                cls="text-base font-semibold text-slate-900",
+            ),
+            P(
+                f"{currency} {total:,.2f}",
+                cls="text-lg font-bold text-indigo-700",
+            ),
+            cls=(
+                "flex items-center justify-between py-2 border-t "
+                "border-slate-200 mt-2"
+            ),
+        ),
+        cls="bg-white border border-slate-200 rounded-xl p-5 mt-4",
+        **attrs,
+    )
+
+
+def _rows_response(
+    wizard: dict,
+    catalog_items: list[dict],
+    banner=None,
+    oob_rows: bool = False,
+) -> tuple:
+    """Rows container (swap target) plus the totals card as an OOB swap."""
+    return (
+        _rows_container(wizard, catalog_items, banner=banner, oob=oob_rows),
+        _totals_card(wizard, oob=True),
     )
 
 
@@ -1558,7 +1977,7 @@ def _catalog_block(query: str, items: list[dict]) -> Div:
         guidance_panel(
             "Pick from your Items catalog to fill the name, SKU, "
             "description, classification, unit price and unit code in one "
-            "click — then just set the quantity.",
+            "click, then just set the quantity.",
             cls="mb-3",
         ),
         Div(
@@ -1618,6 +2037,7 @@ def _catalog_block(query: str, items: list[dict]) -> Div:
 def _line_from_catalog_item(item: dict, quantity: str = "1") -> dict:
     """Merge a saved catalog item into a wizard line (quantity stays local)."""
     return {
+        "catalog_item_id": str(item.get("id", "") or ""),
         "name": item.get("name", "") or "",
         "description": item.get("description", "") or "",
         "sellers_item_identification": item.get("sku", "") or "",
@@ -1653,7 +2073,11 @@ async def _load_catalog_items(
 
 
 def _line_form_fields(
-    line: dict, *, error: str = "", default_unit: str = DEFAULT_UNIT_CODE
+    line: dict,
+    *,
+    error: str = "",
+    default_unit: str = DEFAULT_UNIT_CODE,
+    manual: bool = True,
 ) -> Div:
     has_hsn = bool(line.get("hsn_code"))
     has_isic = bool(line.get("isic_code"))
@@ -1705,8 +2129,18 @@ def _line_form_fields(
             )
         )
 
+    if not manual:
+        children.append(
+            guidance_panel(
+                "Quantity, price and adjustments are saved on this invoice "
+                "only. The saved item itself is not changed.",
+                cls="mb-4",
+            )
+        )
+
     children.extend(
         [
+            Hidden(name="catalog_item_id", value=_line_catalog_id(line)),
             Hidden(name="hsn_code", value=line.get("hsn_code", "") or ""),
             Hidden(
                 name="product_category",
@@ -1747,9 +2181,9 @@ def _line_form_fields(
                     name="invoiced_quantity",
                     label="Quantity",
                     type="number",
-                    value=str(line.get("invoiced_quantity", "1") or "1"),
+                    value=_fmt_num(line.get("invoiced_quantity"), "1"),
                     required=True,
-                    helper="How many are you billing for? e.g. 3 bags, 5 hours, 1 job.",
+                    helper="How many units are you billing for on this line?",
                     min="1",
                     step="1",
                 ),
@@ -1757,9 +2191,9 @@ def _line_form_fields(
                     name="price_amount",
                     label="Unit price",
                     type="number",
-                    value=str(line.get("price_amount", "0.00") or "0.00"),
+                    value=_fmt_num(line.get("price_amount"), "0.00"),
                     required=True,
-                    helper="The price for one of whatever you're billing.",
+                    helper="Price for a single unit on this line.",
                     min="0.01",
                     step="0.01",
                 ),
@@ -1799,8 +2233,9 @@ def _line_form_fields(
                 Div(
                     guidance_panel(
                         "These fields describe the invoice unit basis. Leave "
-                        f"them at the defaults ('1' and '{default_unit} — "
-                        f"{unit_code_label(default_unit)}') unless you bill "
+                        f"them at the defaults ('1' and '{default_unit} - "
+                        f"{unit_code_label(default_unit)}') unless "
+                        "you bill "
                         "metered units or multi-base quantities.",
                         cls="mb-4",
                     ),
@@ -1809,7 +2244,7 @@ def _line_form_fields(
                             name="base_quantity",
                             label="Base quantity",
                             type="number",
-                            value=str(line.get("base_quantity", "1") or "1"),
+                            value=_fmt_num(line.get("base_quantity"), "1"),
                             required=True,
                             min="1",
                             step="1",
@@ -1830,6 +2265,143 @@ def _line_form_fields(
     return Div(*children, id="line-form-fields")
 
 
+def _lookup_results_panel(hits: list[dict], query: str) -> Div:
+    if not query:
+        return Div(id="lookup-results")
+    if hits:
+        return Div(
+            *[_lookup_hit_row(h) for h in hits],
+            id="lookup-results",
+            cls=(
+                "mt-2 max-h-72 overflow-auto rounded-lg border "
+                "border-slate-200 bg-white shadow-xs animate-fade-in-up"
+            ),
+        )
+    return Div(
+        P(
+            "No matching items found.",
+            cls="text-xs text-slate-500 px-3 py-3",
+        ),
+        id="lookup-results",
+        cls="mt-2 rounded-lg border border-slate-200 bg-slate-50/60",
+    )
+
+
+def _lookup_block(
+    lookup_query: str = "", lookup_hits: list[dict] | None = None
+) -> Div:
+    """Classification lookup. Shown only for one-off / manual line editing."""
+    lookup_hits = lookup_hits or []
+    return Div(
+        Label(
+            "Classification lookup",
+            cls="block text-sm font-medium text-slate-700 mb-1.5",
+        ),
+        guidance_panel(
+            "Not saved in your catalog yet? Search the FIRS classification "
+            "list and attach a code to this one-off line.",
+            cls="mb-3",
+        ),
+        Div(
+            Div(
+                icon(
+                    "search",
+                    cls=(
+                        "h-4 w-4 text-slate-400 absolute left-3 top-1/2 "
+                        "-translate-y-1/2 pointer-events-none"
+                    ),
+                ),
+                Input(
+                    type="search",
+                    name="lookup_q",
+                    id="lookup-q-input",
+                    placeholder=(
+                        "Search by keyword or code, e.g. 'rice', "
+                        "'consulting', '1006.10'"
+                    ),
+                    value=lookup_query,
+                    autocomplete="off",
+                    hx_get="/invoices/wizard/line/lookup",
+                    hx_trigger="keyup changed delay:400ms, search",
+                    hx_target="#lookup-results",
+                    hx_swap="outerHTML",
+                    hx_indicator="#lookup-spinner",
+                    cls=(
+                        "w-full pl-9 pr-9 py-2 bg-white text-slate-900 "
+                        "border border-slate-300 rounded-lg text-sm "
+                        "focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                    ),
+                ),
+                Div(
+                    icon(
+                        "loader",
+                        cls="h-4 w-4 text-indigo-500 animate-spin",
+                    ),
+                    id="lookup-spinner",
+                    cls=(
+                        "htmx-indicator absolute right-3 top-1/2 "
+                        "-translate-y-1/2 pointer-events-none"
+                    ),
+                ),
+                cls="relative",
+            ),
+            guidance_text(
+                "Type at least 2 characters. Selecting a result attaches its "
+                "code. Clearing the search keeps your selection."
+            ),
+            _lookup_results_panel(lookup_hits, lookup_query),
+            cls="p-4 bg-slate-50 rounded-lg border border-slate-200",
+        ),
+        id="line-lookup-block",
+        cls="mb-5",
+    )
+
+
+def _lookup_block_cleared() -> Div:
+    """OOB swap that removes the lookup block once an item is attached."""
+    return Div(id="line-lookup-block", hx_swap_oob="outerHTML")
+
+
+def _saved_item_summary(line: dict) -> Div:
+    description = str(line.get("description", "") or "").strip()
+    return Div(
+        Div(
+            icon("package", cls="h-4 w-4 text-indigo-600 shrink-0"),
+            P(
+                "Saved item",
+                cls=(
+                    "text-[11px] font-bold uppercase tracking-wider "
+                    "text-slate-500"
+                ),
+            ),
+            _row_classification_badge(line),
+            cls="flex items-center gap-2 mb-2",
+        ),
+        P(
+            str(line.get("name", "") or "").strip() or "Saved item",
+            cls="text-sm font-semibold text-slate-900",
+        ),
+        P(description, cls="text-xs text-slate-500 mt-0.5")
+        if description
+        else "",
+        guidance_text(
+            "The classification comes from your saved item. Switch the row to "
+            "a one-off line to change it."
+        ),
+        A(
+            icon("package", cls="h-3 w-3"),
+            Span("Manage items"),
+            href="/items",
+            target="_blank",
+            cls=(
+                "inline-flex items-center gap-1.5 text-xs font-medium "
+                "text-indigo-600 hover:underline mt-2"
+            ),
+        ),
+        cls="mb-5 p-4 bg-white rounded-lg border border-indigo-200",
+    )
+
+
 def _line_modal(
     *,
     edit_idx: int = -1,
@@ -1842,34 +2414,29 @@ def _line_modal(
     default_unit: str = DEFAULT_UNIT_CODE,
 ) -> Div:
     line = line or {}
-    lookup_hits = lookup_hits or []
-    catalog_items = catalog_items or []
+    manual = not _is_catalog_line(line)
     is_edit = edit_idx >= 0
-    title = "Edit line item" if is_edit else "Add line item"
-    submit_label = "Update line" if is_edit else "Add line"
+    title = f"Line {edit_idx + 1} details" if is_edit else "New one-off line"
+    subtitle = (
+        "Search your saved items, or attach a classification code for a "
+        "one-off line."
+        if manual
+        else "Adjust quantity, price and adjustments for this saved item."
+    )
+    submit_label = "Save line" if is_edit else "Add line"
     action = "/invoices/wizard/line/save"
 
-    if lookup_query:
-        if lookup_hits:
-            lookup_results = Div(
-                *[_lookup_hit_row(h) for h in lookup_hits],
-                id="lookup-results",
-                cls=(
-                    "mt-2 max-h-72 overflow-auto rounded-lg border "
-                    "border-slate-200 bg-white shadow-xs animate-fade-in-up"
-                ),
-            )
-        else:
-            lookup_results = Div(
-                P(
-                    "No matching products or services found.",
-                    cls="text-xs text-slate-500 px-3 py-3",
-                ),
-                id="lookup-results",
-                cls="mt-2 rounded-lg border border-slate-200 bg-slate-50/60",
-            )
+    body: list = []
+    if manual:
+        body.append(_catalog_block(catalog_query, catalog_items or []))
+        body.append(_lookup_block(lookup_query, lookup_hits or []))
     else:
-        lookup_results = Div(id="lookup-results")
+        body.append(_saved_item_summary(line))
+    body.append(
+        _line_form_fields(
+            line, error=error, default_unit=default_unit, manual=manual
+        )
+    )
 
     return Div(
         Div(
@@ -1878,10 +2445,7 @@ def _line_modal(
                 Div(
                     Div(
                         H3(title, cls="text-lg font-bold text-slate-900"),
-                        P(
-                            "Search products & services to attach FIRS HS / ISIC codes automatically.",
-                            cls="text-sm text-slate-500 mt-0.5",
-                        ),
+                        P(subtitle, cls="text-sm text-slate-500 mt-0.5"),
                         cls="flex-1 min-w-0",
                     ),
                     Button(
@@ -1890,78 +2454,17 @@ def _line_modal(
                         hx_get="/invoices/wizard/modal/clear",
                         hx_target="#wizard-modal-area",
                         hx_swap="innerHTML",
-                        cls="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-700 shrink-0",
+                        cls=(
+                            "p-1.5 rounded-lg text-slate-400 "
+                            "hover:bg-slate-100 hover:text-slate-700 shrink-0"
+                        ),
                     ),
-                    cls="flex items-start justify-between gap-3 px-6 py-4 border-b border-slate-200",
-                ),
-                Div(
-                    Div(
-                        _catalog_block(catalog_query, catalog_items),
-                        Label(
-                            "Classification lookup",
-                            cls="block text-sm font-medium text-slate-700 mb-1.5",
-                        ),
-                        guidance_panel(
-                            "Not in your catalog yet? Search across HS codes "
-                            "(products) and ISIC codes (services) instead.",
-                            cls="mb-3",
-                        ),
-                        Div(
-                            Div(
-                                icon(
-                                    "search",
-                                    cls="h-4 w-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none",
-                                ),
-                                Input(
-                                    type="search",
-                                    name="lookup_q",
-                                    id="lookup-q-input",
-                                    placeholder=(
-                                        "Search product or service e.g. 'rice', 'cereals', "
-                                        "'consulting', 'plumbing'…"
-                                    ),
-                                    value=lookup_query,
-                                    autocomplete="off",
-                                    hx_get="/invoices/wizard/line/lookup",
-                                    hx_trigger="keyup changed delay:400ms, search",
-                                    hx_target="#lookup-results",
-                                    hx_swap="outerHTML",
-                                    hx_indicator="#lookup-spinner",
-                                    cls=(
-                                        "w-full pl-9 pr-9 py-2 bg-white text-slate-900 "
-                                        "border border-slate-300 rounded-lg text-sm "
-                                        "focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                                    ),
-                                ),
-                                Div(
-                                    icon(
-                                        "loader",
-                                        cls=(
-                                            "h-4 w-4 text-indigo-500 animate-spin"
-                                        ),
-                                    ),
-                                    id="lookup-spinner",
-                                    cls=(
-                                        "htmx-indicator absolute right-3 top-1/2 "
-                                        "-translate-y-1/2 pointer-events-none"
-                                    ),
-                                ),
-                                cls="relative",
-                            ),
-                            guidance_text(
-                                "Type at least 2 characters. Selecting a result "
-                                "attaches the FIRS HS or ISIC code; clearing the "
-                                "search keeps your selection."
-                            ),
-                            lookup_results,
-                            cls="mb-5 p-4 bg-slate-50 rounded-lg border border-slate-200",
-                        ),
-                        _line_form_fields(
-                            line, error=error, default_unit=default_unit
-                        ),
-                        cls="px-6 py-5 max-h-[70vh] overflow-auto",
+                    cls=(
+                        "flex items-start justify-between gap-3 px-6 py-4 "
+                        "border-b border-slate-200"
                     ),
                 ),
+                Div(*body, cls="px-6 py-5 max-h-[70vh] overflow-auto"),
                 Div(
                     Button(
                         Span("Cancel"),
@@ -1969,126 +2472,98 @@ def _line_modal(
                         hx_get="/invoices/wizard/modal/clear",
                         hx_target="#wizard-modal-area",
                         hx_swap="innerHTML",
-                        cls="px-4 py-2 bg-white border border-slate-300 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50",
+                        cls=(
+                            "px-4 py-2 bg-white border border-slate-300 "
+                            "text-slate-700 text-sm font-medium rounded-lg "
+                            "hover:bg-slate-50"
+                        ),
                     ),
                     Button(
                         icon("check-circle", cls="h-4 w-4"),
                         Span(submit_label),
                         type="submit",
-                        cls="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700",
+                        cls=(
+                            "inline-flex items-center gap-2 px-4 py-2 "
+                            "bg-indigo-600 text-white text-sm font-medium "
+                            "rounded-lg hover:bg-indigo-700"
+                        ),
                     ),
-                    cls="flex justify-end gap-2 px-6 py-4 border-t border-slate-200 bg-slate-50 rounded-b-2xl",
+                    cls=(
+                        "flex justify-end gap-2 px-6 py-4 border-t "
+                        "border-slate-200 bg-slate-50 rounded-b-2xl"
+                    ),
                 ),
                 method="post",
                 action=action,
                 hx_post=action,
-                hx_target="body",
-                hx_swap="outerHTML",
+                hx_target="#wizard-modal-area",
+                hx_swap="innerHTML",
                 cls="flex flex-col",
             ),
-            cls="bg-white border border-slate-200 rounded-2xl w-full max-w-3xl shadow-lg overflow-hidden",
+            cls=(
+                "bg-white border border-slate-200 rounded-2xl w-full "
+                "max-w-3xl shadow-lg overflow-hidden"
+            ),
         ),
-        cls="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4",
+        cls=(
+            "fixed inset-0 z-50 flex items-center justify-center "
+            "bg-slate-900/40 backdrop-blur-xs p-4"
+        ),
     )
 
 
 def _step3(
     *,
     wizard: dict,
+    catalog_items: list[dict] | None = None,
     error: str = "",
     success: str = "",
-    add_error: str = "",
 ) -> Div:
-    lines = wizard.get("step3", {}).get("lines", [])
-    subtotal = sum(_line_extension(l) for l in lines)
-    tax = subtotal * TAX_RATE
-    total = subtotal + tax
-    currency = wizard.get("document_currency_code", "NGN")
+    catalog_items = catalog_items or []
+    lines = (wizard.get("step3", {}) or {}).get("lines", []) or []
 
-    add_btn = Button(
-        icon("plus", cls="h-4 w-4"),
-        Span("Add line item"),
-        type="button",
-        hx_get="/invoices/wizard/line/new",
-        hx_target="#wizard-modal-area",
-        hx_swap="innerHTML",
-        cls="inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 shadow-sm",
-    )
-
-    if lines:
-        rows = [_line_row(i, line) for i, line in enumerate(lines)]
-        line_table = Div(
-            Table(
-                Thead(
-                    Tr(
-                        Th(
-                            "Item",
-                            cls="px-3 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider",
-                        ),
-                        Th(
-                            "Qty",
-                            cls="px-3 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider",
-                        ),
-                        Th(
-                            "Unit price",
-                            cls="px-3 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider",
-                        ),
-                        Th(
-                            "Subtotal",
-                            cls="px-3 py-3 text-right text-xs font-semibold text-slate-500 uppercase tracking-wider",
-                        ),
-                        Th("", cls="px-3 py-3"),
-                        cls="border-b border-slate-200 bg-slate-50",
-                    ),
+    header = Div(
+        Div(
+            H3(
+                "Invoice lines",
+                cls="text-base font-semibold text-slate-900",
+            ),
+            P(
+                f"{len(lines)} line(s) on this invoice",
+                cls="text-xs text-slate-500 mt-0.5",
+            ),
+        ),
+        Div(
+            Button(
+                icon("file-text", cls="h-4 w-4"),
+                Span("New one-off line"),
+                type="button",
+                hx_get="/invoices/wizard/line/new",
+                hx_target="#wizard-modal-area",
+                hx_swap="innerHTML",
+                cls=(
+                    "inline-flex items-center gap-2 px-4 py-2 bg-white "
+                    "border border-slate-300 text-slate-700 text-sm "
+                    "font-medium rounded-lg hover:bg-slate-50 "
+                    "hover:text-indigo-600 hover:border-indigo-300"
                 ),
-                Tbody(*rows),
-                cls="table-auto w-full",
             ),
-            cls="overflow-hidden rounded-xl border border-slate-200 bg-white",
-        )
-    else:
-        line_table = Div(
-            icon("receipt", cls="h-10 w-10 text-slate-300 mx-auto mb-3"),
-            P(
-                "No line items yet",
-                cls="text-base font-semibold text-slate-900",
+            Button(
+                icon("plus", cls="h-4 w-4"),
+                Span("Add row"),
+                type="button",
+                hx_post="/invoices/wizard/step/3/rows/add",
+                hx_target="#line-rows",
+                hx_swap="outerHTML",
+                cls=(
+                    "inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 "
+                    "text-white text-sm font-medium rounded-lg "
+                    "hover:bg-indigo-700 shadow-sm"
+                ),
             ),
-            P(
-                "Click 'Add line item' to attach goods or services to this invoice.",
-                cls="text-sm text-slate-500 mt-1",
-            ),
-            cls="text-center py-12 bg-white rounded-xl border border-dashed border-slate-300",
-        )
-
-    totals = Div(
-        Div(
-            P("Subtotal", cls="text-sm text-slate-600"),
-            P(
-                f"{currency} {subtotal:.2f}",
-                cls="text-sm font-medium text-slate-900",
-            ),
-            cls="flex items-center justify-between py-1.5",
+            cls="flex items-center gap-2",
         ),
-        Div(
-            P("VAT (7.5%)", cls="text-sm text-slate-600"),
-            P(
-                f"{currency} {tax:.2f}",
-                cls="text-sm font-medium text-slate-900",
-            ),
-            cls="flex items-center justify-between py-1.5",
-        ),
-        Div(
-            P(
-                "Total payable",
-                cls="text-base font-semibold text-slate-900",
-            ),
-            P(
-                f"{currency} {total:.2f}",
-                cls="text-lg font-bold text-indigo-700",
-            ),
-            cls="flex items-center justify-between py-2 border-t border-slate-200 mt-2",
-        ),
-        cls="bg-white border border-slate-200 rounded-xl p-5 mt-4",
+        cls="flex items-start justify-between gap-3 mb-4",
     )
 
     nav = Form(
@@ -2097,26 +2572,17 @@ def _step3(
         action="/invoices/wizard/step/3",
     )
 
-    header = Div(
-        Div(
-            H3(
-                "Line items",
-                cls="text-base font-semibold text-slate-900",
-            ),
-            P(
-                f"{len(lines)} item(s) added",
-                cls="text-xs text-slate-500 mt-0.5",
-            ),
-        ),
-        add_btn,
-        cls="flex items-center justify-between mb-4",
-    )
-
     return Div(
         _banner(error, success),
+        guidance_panel(
+            "Pick a saved item on a row to fill its details, or leave it as a "
+            "one-off line and open the row to enter them. Discounts and fees "
+            "are set per row as a percent, a fixed amount, or none.",
+            cls="mb-5",
+        ),
         header,
-        line_table,
-        totals,
+        _rows_container(wizard, catalog_items),
+        _totals_card(wizard),
         nav,
         Div(id="wizard-modal-area"),
     )
@@ -2138,7 +2604,7 @@ def _summary_card(wizard: dict) -> Div:
                     cls="text-xs uppercase text-slate-500 font-semibold tracking-wider",
                 ),
                 P(
-                    wizard.get("irn", "—"),
+                    wizard.get("irn", "") or "-",
                     cls="text-sm font-mono text-slate-900 mt-1 break-all",
                 ),
             ),
@@ -2148,7 +2614,7 @@ def _summary_card(wizard: dict) -> Div:
                     cls="text-xs uppercase text-slate-500 font-semibold tracking-wider",
                 ),
                 P(
-                    wizard.get("issue_date", "—"),
+                    wizard.get("issue_date", "") or "-",
                     cls="text-sm text-slate-900 mt-1",
                 ),
             ),
@@ -2158,7 +2624,7 @@ def _summary_card(wizard: dict) -> Div:
                     cls="text-xs uppercase text-slate-500 font-semibold tracking-wider",
                 ),
                 P(
-                    wizard.get("customer_party_name", "—"),
+                    wizard.get("customer_party_name", "") or "-",
                     cls="text-sm text-slate-900 mt-1",
                 ),
             ),
@@ -2339,9 +2805,9 @@ def _signing_secret_setup_card() -> Form:
     return Form(
         guidance_panel(
             "You don't have a signing secret yet. It is the passphrase that "
-            "authorises your invoices with FIRS \u2014 set it once here and "
+            "authorises your invoices with FIRS. Set it once here and "
             "reuse it for every invoice. You can change it later in "
-            "Settings \u2192 Signing Secret.",
+            "Settings, Signing Secret.",
             title="First invoice? Set your signing secret",
             cls="mb-4",
         ),
@@ -2692,10 +3158,6 @@ def _render_step4(
             cls="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4",
         ),
         Div(
-            _derived_fields_card(wizard),
-            cls="mb-5",
-        ),
-        Div(
             Div(
                 H3(
                     "Guided lifecycle",
@@ -2987,10 +3449,17 @@ def register_routes(rt) -> None:
             )
 
         if current_step == 3:
-            body = _step3(wizard=wizard, error=error, success=success)
+            catalog = await _load_catalog_items(jwt, sid, limit=200)
+            body = _step3(
+                wizard=wizard,
+                catalog_items=catalog,
+                error=error,
+                success=success,
+            )
             return _wizard_layout(
-                "Line items",
-                "Add the goods and services being invoiced. Attach FIRS HS / ISIC codes.",
+                "Invoice lines",
+                "Add a row per line. Pick a saved item, or enter a one-off "
+                "line, then set quantity, discount and fee.",
                 3,
                 body,
                 username=current_username(req),
@@ -3334,7 +3803,7 @@ def register_routes(rt) -> None:
         catalog = await _load_catalog_items(jwt, sid)
         return _line_modal(
             edit_idx=-1,
-            line={"price_unit": unit},
+            line=_empty_row_line(unit),
             catalog_items=catalog,
             default_unit=unit,
         )
@@ -3378,17 +3847,115 @@ def register_routes(rt) -> None:
                 {"price_unit": default_unit, "invoiced_quantity": qty},
                 error=(
                     "Could not load that saved item. It may have been "
-                    "deleted — refresh the search and try again."
+                    "deleted. Refresh the search and try again."
                 ),
                 default_unit=default_unit,
             )
 
         line = _line_from_catalog_item(item, qty)
         return (
-            _line_form_fields(line, default_unit=default_unit),
+            _line_form_fields(line, default_unit=default_unit, manual=False),
             Div(id="catalog-results", hx_swap_oob="outerHTML"),
-            Div(id="lookup-results", hx_swap_oob="outerHTML"),
+            _lookup_block_cleared(),
         )
+
+    async def _rows_reply(req: Request, wizard: dict, banner=None):
+        """Re-render the inline rows (swap target) plus the OOB totals card."""
+        catalog = await _load_catalog_items(
+            current_jwt(req), get_session_id(req), limit=200
+        )
+        return _rows_response(wizard, catalog, banner=banner)
+
+    @rt("/invoices/wizard/step/3/rows/add", methods=["POST"])
+    async def add_line_row(req: Request):
+        redirect = require_session(req)
+        if redirect:
+            return redirect
+        sid = get_session_id(req)
+        wizard = _load_wizard(sid)
+        lines = wizard.setdefault("step3", {}).setdefault("lines", [])
+        lines.append(_empty_row_line(_default_price_unit(wizard)))
+        wizard["_step"] = 3
+        _save_wizard(sid, wizard)
+        if req.headers.get("HX-Request") == "true":
+            return await _rows_reply(req, wizard)
+        return RedirectResponse("/invoices/wizard?step=3", status_code=303)
+
+    @rt("/invoices/wizard/line/{idx}/update", methods=["POST"])
+    async def update_line_row(req: Request, idx: int):
+        """Inline row update: saved item selection, quantity, price, discount, fee."""
+        redirect = require_session(req)
+        if redirect:
+            return redirect
+        sid = get_session_id(req)
+        jwt = current_jwt(req)
+        form = await req.form()
+        wizard = _load_wizard(sid)
+        lines = wizard.setdefault("step3", {}).setdefault("lines", [])
+        if idx < 0 or idx >= len(lines):
+            return await _rows_reply(
+                req,
+                wizard,
+                alert("error", "That line no longer exists."),
+            )
+
+        default_unit = _default_price_unit(wizard)
+        line = dict(lines[idx])
+        banner = None
+        ignore: tuple[str, ...] = ()
+
+        new_catalog_id = (form.get("catalog_item_id") or "").strip()
+        prev_catalog_id = _line_catalog_id(line)
+        if new_catalog_id != prev_catalog_id:
+            if new_catalog_id:
+                item: dict = {}
+                try:
+                    item = await api_client.get_item(
+                        jwt, int(new_catalog_id), session_id=sid
+                    )
+                except (TypeError, ValueError):
+                    logger.exception("update_line_row: bad item id")
+                except api_client.APIError:
+                    logger.exception("update_line_row: get_item failed")
+                except Exception:
+                    logger.exception("update_line_row transport error")
+                if item:
+                    qty = _fmt_num(
+                        form.get("quantity")
+                        or line.get("invoiced_quantity")
+                        or "1",
+                        "1",
+                    )
+                    merged = _line_from_catalog_item(item, qty)
+                    for key in (
+                        "discount_rate",
+                        "discount_amount",
+                        "fee_rate",
+                        "fee_amount",
+                    ):
+                        merged[key] = line.get(key, 0.0)
+                    line = merged
+                    # The saved item is authoritative for price and unit.
+                    ignore = ("unit_price",)
+                else:
+                    banner = alert(
+                        "error",
+                        "Could not load that saved item. Refresh the page "
+                        "and try again.",
+                    )
+            else:
+                line = _to_one_off(line)
+
+        line, err = _apply_row_form(line, form, default_unit, ignore=ignore)
+        lines[idx] = _normalize_line(line, default_unit)
+        wizard["_step"] = 3
+        _save_wizard(sid, wizard)
+
+        if err and banner is None:
+            banner = alert("error", f"Line {idx + 1}: {err}")
+        if req.headers.get("HX-Request") != "true":
+            return RedirectResponse("/invoices/wizard?step=3", status_code=303)
+        return await _rows_reply(req, wizard, banner)
 
     @rt("/invoices/wizard/line/{idx}/edit", methods=["GET"])
     async def edit_line_modal(req: Request, idx: int):
@@ -4105,6 +4672,7 @@ def register_routes(rt) -> None:
             fee_rate_out, fee_amount_out = 0.0, fee_value
 
         line = {
+            "catalog_item_id": (form.get("catalog_item_id") or "").strip(),
             "name": (form.get("name") or "").strip(),
             "description": raw_desc,
             "sellers_item_identification": (
@@ -4142,16 +4710,21 @@ def register_routes(rt) -> None:
                 num_err = "Base quantity must be greater than zero."
 
         err = num_err or _validate_line(line)
+        line = _normalize_line(line, default_unit)
+        jwt = current_jwt(req)
         if err:
             if req.headers.get("HX-Request") == "true":
+                catalog = await _load_catalog_items(jwt, sid)
                 return _line_modal(
                     edit_idx=edit_idx,
                     line=line,
                     error=err,
+                    catalog_items=catalog,
                     default_unit=default_unit,
                 )
             return RedirectResponse(
-                f"/invoices/wizard?step=3&error={err}", status_code=303
+                "/invoices/wizard?step=3&error=" + urllib.parse.quote_plus(err),
+                status_code=303,
             )
 
         lines = wizard.setdefault("step3", {}).setdefault("lines", [])
@@ -4165,11 +4738,16 @@ def register_routes(rt) -> None:
         _save_wizard(sid, wizard)
 
         if req.headers.get("HX-Request") == "true":
-            resp = HTMLResponse("")
-            resp.headers["HX-Redirect"] = (
-                f"/invoices/wizard?step=3&success={success.replace(' ', '+')}"
+            catalog = await _load_catalog_items(jwt, sid, limit=200)
+            return (
+                Div(),
+                *_rows_response(
+                    wizard,
+                    catalog,
+                    banner=alert("success", f"{success}."),
+                    oob_rows=True,
+                ),
             )
-            return resp
         return RedirectResponse(
             f"/invoices/wizard?step=3&success={success.replace(' ', '+')}",
             status_code=303,
@@ -4188,10 +4766,20 @@ def register_routes(rt) -> None:
             idx = -1
         wizard = _load_wizard(sid)
         lines = wizard.get("step3", {}).get("lines", [])
+        removed = False
         if 0 <= idx < len(lines):
             lines.pop(idx)
             wizard.setdefault("step3", {})["lines"] = lines
+            removed = True
+        wizard["_step"] = 3
         _save_wizard(sid, wizard)
+        if req.headers.get("HX-Request") == "true":
+            banner = (
+                alert("success", "Line removed.")
+                if removed
+                else alert("error", "That line no longer exists.")
+            )
+            return await _rows_reply(req, wizard, banner)
         return RedirectResponse("/invoices/wizard?step=3", status_code=303)
 
     @rt("/invoices/wizard/step/3", methods=["POST"])
@@ -4210,12 +4798,21 @@ def register_routes(rt) -> None:
             _save_wizard(sid, wizard)
             return RedirectResponse("/invoices/wizard?step=2", status_code=303)
 
-        lines = wizard.get("step3", {}).get("lines", [])
+        lines = wizard.get("step3", {}).get("lines", []) or []
         if not lines:
             return RedirectResponse(
-                "/invoices/wizard?step=3&error=Add+at+least+one+line+item",
+                "/invoices/wizard?step=3&error="
+                + urllib.parse.quote_plus("Add at least one invoice line."),
                 status_code=303,
             )
+        for position, line in enumerate(lines, start=1):
+            line_error = _validate_line(line)
+            if line_error:
+                return RedirectResponse(
+                    "/invoices/wizard?step=3&error="
+                    + urllib.parse.quote_plus(f"Line {position}: {line_error}"),
+                    status_code=303,
+                )
         try:
             assembled = await api_client.assemble_invoice(
                 jwt, wizard, session_id=sid
@@ -4355,7 +4952,7 @@ def register_routes(rt) -> None:
             title="Transmit this invoice to FIRS?",
             message=(
                 "The signed invoice will be sent to the FIRS gateway. "
-                "Transmission cannot be recalled \u2014 corrections must be "
+                "Transmission cannot be recalled. Corrections must be "
                 "issued as a new invoice with a fresh IRN. You can also "
                 "transmit later from the invoice page."
             ),
@@ -4367,7 +4964,7 @@ def register_routes(rt) -> None:
             details=confirm_detail_rows(
                 [
                     ("IRN", irn),
-                    ("Customer", wizard.get("customer_party_name", "") or "—"),
+                    ("Customer", wizard.get("customer_party_name", "") or "-"),
                 ]
             ),
         )

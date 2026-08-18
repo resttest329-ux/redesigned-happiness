@@ -12,6 +12,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Annotated, Optional
 
@@ -51,8 +52,156 @@ ITEM_FIELDS = (
     "base_quantity",
 )
 
-IMPORT_COLUMNS = list(ITEM_FIELDS)
+#: The simple spreadsheet layout we ask users for. One classification column
+#: (``code``) is enough: HS codes look like ``XXXX.XX`` (product) and ISIC
+#: codes are exactly four digits (service), so the kind is detected here and
+#: mapped onto the stored ``hsn_*`` / ``isic_*`` fields. No schema change.
+SIMPLE_IMPORT_COLUMNS = [
+    "sku",
+    "name",
+    "description",
+    "code",
+    "unit_price",
+    "price_unit",
+    "base_quantity",
+]
+
+#: The older explicit layout stays accepted for backwards compatibility.
+DETAILED_IMPORT_COLUMNS = list(ITEM_FIELDS)
+
+IMPORT_COLUMNS = SIMPLE_IMPORT_COLUMNS
 MAX_IMPORT_ROWS = 2000
+
+HSN_CODE_RE = re.compile(r"^\d{4}\.\d{2}$")
+ISIC_CODE_RE = re.compile(r"^\d{4}$")
+
+#: Header names accepted for the single classification column.
+CODE_COLUMN_ALIASES = (
+    "code",
+    "classification",
+    "classification_code",
+    "hsn_code",
+    "hs_code",
+    "hsn",
+    "hs",
+    "isic_code",
+    "isic",
+    "product_code",
+    "service_code",
+)
+
+#: Header names accepted for the optional category column.
+CATEGORY_COLUMN_ALIASES = (
+    "category",
+    "classification_category",
+    "hsn_category",
+    "isic_category",
+    "product_category",
+    "service_category",
+)
+
+#: Category labels stay short so invoice lines and FIRS payloads stay readable.
+CATEGORY_MAX_LENGTH = 60
+
+_BOTH_CLASSIFICATIONS_ERROR = (
+    "code: an item is either a product (HS code) or a service (ISIC code), "
+    "not both."
+)
+_MISSING_CODE_ERROR = (
+    "code: a classification code is required. Use HS format XXXX.XX for a "
+    "product, or 4 digits for a service."
+)
+
+
+def detect_classification(code: object) -> str | None:
+    """Return ``"product"``, ``"service"`` or ``None`` for a raw code."""
+    raw = str(code or "").strip()
+    if HSN_CODE_RE.match(raw):
+        return "product"
+    if ISIC_CODE_RE.match(raw):
+        return "service"
+    return None
+
+
+def _first_filled(row: dict, keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = row.get(key)
+        text = str(value).strip() if value is not None else ""
+        if text:
+            return text
+    return ""
+
+
+def concise_category(*candidates: object) -> str:
+    """First usable candidate, trimmed to one short label."""
+    for candidate in candidates:
+        text = " ".join(str(candidate or "").split())
+        if not text:
+            continue
+        primary = text.split(";", 1)[0].strip()
+        if len(primary) > CATEGORY_MAX_LENGTH and "," in primary:
+            primary = primary.split(",", 1)[0].strip()
+        primary = primary or text
+        return primary[:CATEGORY_MAX_LENGTH].strip()
+    return ""
+
+
+def normalize_import_row(raw_row: dict) -> tuple[dict, str]:
+    """Turn one spreadsheet row into an ``ItemCreate`` payload.
+
+    Accepts both the simple layout (one ``code`` column) and the older
+    detailed layout (``hsn_code`` / ``isic_code`` plus categories). Returns
+    ``(payload, error)`` where a non-empty error means the row must be skipped
+    with that concise reason.
+    """
+    row = {str(k or "").strip().lower(): v for k, v in (raw_row or {}).items()}
+    payload: dict = {}
+    for field in ITEM_FIELDS:
+        if field not in row:
+            continue
+        value = row[field]
+        if value is None or str(value).strip() == "":
+            continue
+        payload[field] = value.strip() if isinstance(value, str) else value
+
+    hsn = str(payload.get("hsn_code") or "").strip()
+    isic = str(payload.get("isic_code") or "").strip()
+    if hsn and isic:
+        return payload, _BOTH_CLASSIFICATIONS_ERROR
+
+    code = hsn or isic or _first_filled(row, CODE_COLUMN_ALIASES)
+    if not code:
+        return payload, _MISSING_CODE_ERROR
+
+    kind = detect_classification(code)
+    if kind is None:
+        return payload, (
+            f"code: '{code}' is not a valid classification code. Use HS "
+            "format XXXX.XX for a product, or 4 digits for a service."
+        )
+
+    category = concise_category(
+        _first_filled(row, CATEGORY_COLUMN_ALIASES),
+        payload.get("name"),
+        payload.get("description"),
+    )
+    if not category:
+        return payload, (
+            "category: could not be derived. Add a category column, or a "
+            "name for the item."
+        )
+
+    if kind == "product":
+        payload["hsn_code"] = code
+        payload["hsn_category"] = category
+        payload.pop("isic_code", None)
+        payload.pop("isic_category", None)
+    else:
+        payload["isic_code"] = code
+        payload["isic_category"] = category
+        payload.pop("hsn_code", None)
+        payload.pop("hsn_category", None)
+    return payload, ""
 
 
 def _coerce_int(value, default: int) -> int:
@@ -61,8 +210,8 @@ def _coerce_int(value, default: int) -> int:
     Under FastAPI the declared ``Query(...)`` default is replaced by the parsed
     request value, so this is a no-op. When a route is called directly from
     Python (tests, internal helpers) the unresolved ``Query`` marker object can
-    leak through as the default — coerce it back to the documented default so
-    the query builder never receives a non-integer.
+    leak through as the default, so coerce it back to the documented default
+    and the query builder never receives a non-integer.
     """
     if isinstance(value, bool) or not isinstance(value, (int, float, str)):
         return default
@@ -218,7 +367,9 @@ async def import_items(
     if len(rows) > MAX_IMPORT_ROWS:
         raise HTTPException(
             status_code=400,
-            detail=f"Too many rows — import at most {MAX_IMPORT_ROWS} at a time.",
+            detail=(
+                f"Too many rows, import at most {MAX_IMPORT_ROWS} at a time."
+            ),
         )
     return _process_import_rows(rows, db=db, business_id=user.business_id)
 
@@ -365,7 +516,8 @@ def _parse_csv(raw: bytes) -> list[dict]:
             text = raw.decode(encoding)
             break
         except UnicodeDecodeError:
-            # Expected while probing encodings — try the next candidate.
+            # Expected while probing encodings: try the next candidate and
+            # keep the log concise (no traceback).
             logging.exception("Unexpected error")
             logger.debug("_parse_csv: decode failed for %s", encoding)
             continue
@@ -392,7 +544,7 @@ def _parse_xlsx(raw: bytes) -> list[dict]:
         logger.exception("_parse_xlsx: openpyxl unavailable")
         raise HTTPException(
             status_code=400,
-            detail="XLSX import is unavailable — please upload a CSV file.",
+            detail="XLSX import is unavailable, please upload a CSV file.",
         )
     try:
         wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
@@ -414,6 +566,7 @@ def _parse_xlsx(raw: bytes) -> list[dict]:
             rows.append(row)
         return rows
     except HTTPException:
+        # Already a user-facing error with a concise detail, re-raise as is.
         logging.exception("Unexpected error")
         raise
     except Exception:
@@ -443,7 +596,11 @@ def _format_validation_error(exc: ValidationError) -> str:
 def _process_import_rows(
     rows: list[dict], db: Session, business_id: str
 ) -> schema.ItemImportResult:
-    """Validate and upsert import rows. Bad rows are skipped, never fatal."""
+    """Validate and upsert import rows. Bad rows are skipped, never fatal.
+
+    A skipped row is a normal outcome of importing a user spreadsheet, so each
+    failure is reported back with one concise reason and the import continues.
+    """
     created = 0
     updated = 0
     skipped = 0
@@ -454,42 +611,42 @@ def _process_import_rows(
         row = {
             str(k or "").strip().lower(): v for k, v in (raw_row or {}).items()
         }
-        payload_raw = {
-            field: row.get(field) for field in ITEM_FIELDS if field in row
-        }
-        # Drop blanks so schema defaults apply.
-        payload_raw = {
-            k: v
-            for k, v in payload_raw.items()
-            if v is not None and str(v).strip() != ""
-        }
+        label = _row_label(index, row)
+
+        payload_raw, detect_error = normalize_import_row(row)
+        if detect_error:
+            logger.info(
+                "import row skipped (classification): %s: %s",
+                label,
+                detect_error,
+            )
+            skipped += 1
+            errors.append(f"{label}: {detect_error}")
+            continue
+
         try:
+            # The schema is the single authority for the remaining rules:
+            # official unit code, unit_price > 0, base_quantity > 0 and the
+            # HS / ISIC format itself.
             parsed = schema.ItemCreate(**payload_raw)
         except ValidationError as exc:
-            # Expected for bad user data: a skipped row is a normal outcome of
-            # importing a spreadsheet, not a fault. Record the reason for the
-            # user and move on — no traceback, no exception-level logging.
+            # A rule violation in a user spreadsheet is a normal outcome, so
+            # report one concise line and never a traceback.
             logging.exception("Unexpected error")
             detail = _format_validation_error(exc)
             logger.info(
-                "import row skipped (validation): %s: %s",
-                _row_label(index, row),
-                detail,
+                "import row skipped (validation): %s: %s", label, detail
             )
             skipped += 1
-            errors.append(f"{_row_label(index, row)}: {detail}")
+            errors.append(f"{label}: {detail}")
             continue
         except Exception as exc:
-            # Still a row-level outcome: skip it with a concise reason instead
-            # of emitting a traceback for the whole import.
             logging.exception("Unexpected error")
             logger.warning(
-                "import row skipped (unparseable): %s: %s",
-                _row_label(index, row),
-                exc,
+                "import row skipped (unparseable): %s: %s", label, exc
             )
             skipped += 1
-            errors.append(f"{_row_label(index, row)}: could not be parsed")
+            errors.append(f"{label}: could not be parsed")
             continue
 
         data = parsed.model_dump()
@@ -507,27 +664,21 @@ def _process_import_rows(
                 db.commit()
                 created += 1
         except IntegrityError:
-            # Duplicate SKU is expected user data — roll back and skip the row.
+            # Duplicate SKU is expected user data, so roll back and skip
+            # with one concise line instead of a traceback.
             logging.exception("Unexpected error")
             db.rollback()
-            logger.info(
-                "import row skipped (duplicate SKU): %s",
-                _row_label(index, row),
-            )
+            logger.info("import row skipped (duplicate SKU): %s", label)
             skipped += 1
-            errors.append(
-                f"{_row_label(index, row)}: duplicate SKU in this workspace"
-            )
+            errors.append(f"{label}: duplicate SKU in this workspace")
         except Exception as exc:
-            logging.exception("Unexpected error")
+            logging.exception("import row write failed")
             db.rollback()
             logger.warning(
-                "import row skipped (write failed): %s: %s",
-                _row_label(index, row),
-                exc,
+                "import row skipped (write failed): %s: %s", label, exc
             )
             skipped += 1
-            errors.append(f"{_row_label(index, row)}: could not be saved")
+            errors.append(f"{label}: could not be saved")
 
     return schema.ItemImportResult(
         created=created,

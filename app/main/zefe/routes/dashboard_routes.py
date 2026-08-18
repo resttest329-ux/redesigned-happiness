@@ -90,12 +90,20 @@ def register_routes(rt) -> None:
         stats_data: dict = {}
         items: list[dict] = []
         customer_total = 0
+        item_total = 0
         try:
             stats_task = api_client.get_invoice_stats(jwt, session_id=sid)
             log_task = api_client.get_invoice_log(jwt, limit=8, session_id=sid)
             cust_task = api_client.list_customers(jwt, session_id=sid, limit=1)
-            stats_res, log_res, cust_res = await asyncio.gather(
-                stats_task, log_task, cust_task, return_exceptions=True
+            item_task = api_client.list_items(
+                jwt, session_id=sid, active=True, limit=1
+            )
+            stats_res, log_res, cust_res, item_res = await asyncio.gather(
+                stats_task,
+                log_task,
+                cust_task,
+                item_task,
+                return_exceptions=True,
             )
             if not isinstance(stats_res, Exception):
                 stats_data = stats_res or {}
@@ -103,6 +111,8 @@ def register_routes(rt) -> None:
                 items = (log_res or {}).get("items", [])
             if not isinstance(cust_res, Exception):
                 customer_total = (cust_res or {}).get("total", 0)
+            if not isinstance(item_res, Exception):
+                item_total = (item_res or {}).get("total", 0)
         except Exception:
             logger.exception("dashboard load failed")
 
@@ -151,7 +161,13 @@ def register_routes(rt) -> None:
                 "users",
                 "text-sky-600",
             ),
-            cls="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6",
+            _stat_card(
+                "Items",
+                int(item_total or 0),
+                "package",
+                "text-indigo-600",
+            ),
+            cls="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-6",
         )
 
         recent_card = Div(

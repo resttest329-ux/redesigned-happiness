@@ -80,10 +80,12 @@ This reference document catalogs the backend endpoints exposed by the `zebe` API
 
 ## 3. Customers (`/customers`)
 
+Customers are scoped to the business and soft-deleted (`is_active`) so removing one never rewrites invoice history or breaks a pending draft.
+
 ### `GET /customers`
 - **Purpose**: Queries the workspace customer directory.
 - **How Zefe Uses It**: Populates customer listings, lookup bars, and wizard dropdowns.
-- **Input**: Optional query parameters `search` (keyword filter), `offset`, and `limit`.
+- **Input**: Optional query parameters `search` (keyword filter), `active` (default `true`, pass `null` for all), `offset`, and `limit`.
 - **Output**: Paginated wrapper containing total matches and an item array.
 
 ### `POST /customers`
@@ -99,10 +101,25 @@ This reference document catalogs the backend endpoints exposed by the `zebe` API
 - **Output**: Customer details containing TIN, company address, and contact numbers.
 
 ### `DELETE /customers/{id}`
-- **Purpose**: Removes a customer from the directory.
-- **How Zefe Uses It**: Removes customers individually or via bulk check selection.
-- **Input**: Path identifier.
-- **Output**: Success status `{"ok": true}`.
+- **Purpose**: Deactivates the customer (soft delete). Pass `?hard=true` to remove the row permanently.
+- **How Zefe Uses It**: Row and bulk deactivate / permanent delete flows.
+- **Input**: Path identifier plus optional `hard` flag.
+- **Output**: The customer record in its resulting state.
+
+### `POST /customers/{id}/restore`
+- **Purpose**: Returns a deactivated customer to the active directory.
+- **How Zefe Uses It**: Row level restore from the Inactive filter.
+- **Output**: The restored customer record.
+
+### `POST /customers/bulk-delete` / `POST /customers/bulk-activate`
+- **Purpose**: Bulk deactivate (or hard delete with `{"hard": true}`) and bulk restore.
+- **Input**: JSON `{"ids": [1, 2, 3], "hard": false}`.
+- **Output**: `{"deleted": n, "requested": n, "mode": "soft"}` / `{"activated": n, "requested": n}`.
+
+### `POST /customers/import`
+- **Purpose**: Bulk import from CSV (or XLSX when `openpyxl` is available).
+- **Input**: Multipart file with the columns `tin, party_name, email, telephone, street_name, city_name, postal_zone, country, state, lga`.
+- **Output**: `{"created": n, "updated": n, "skipped": n, "errors": [...]}` — rows are matched on TIN inside the workspace, and invalid rows are skipped with a per-row reason instead of aborting the import.
 
 ---
 
@@ -195,8 +212,8 @@ An item is a reusable invoice line minus per-invoice fields. Items are scoped to
 
 ### `POST /items/import`
 - **Purpose**: Bulk import from CSV (or XLSX when `openpyxl` is available).
-- **Input**: Multipart file with the columns `sku, name, description, hsn_code, hsn_category, isic_code, isic_category, unit_price, price_unit, base_quantity`.
-- **Output**: `{"created": n, "updated": n, "skipped": n, "errors": [...]}` — invalid rows are skipped with a per-row reason and never abort the import.
+- **Input**: Multipart file with the simple columns `sku, name, description, code, unit_price, price_unit, base_quantity`. The classification kind is detected from `code`: `XXXX.XX` is stored as `hsn_code` plus `hsn_category`, and exactly four digits is stored as `isic_code` plus `isic_category`. An optional `category` column overrides the category, otherwise a concise category is derived from the item name. The older detailed columns (`hsn_code, hsn_category, isic_code, isic_category`) are still accepted.
+- **Output**: `{"created": n, "updated": n, "skipped": n, "errors": [...]}`. Invalid rows are skipped with a per-row reason and never abort the import. Rows are rejected when the code is unrecognisable, both classifications are supplied, the unit is not an official code, or the price or base quantity is not greater than zero.
 
 ## 7. Lookups (`/lookup`)
 

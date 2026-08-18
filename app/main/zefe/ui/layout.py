@@ -33,6 +33,88 @@ _NAV_ITEMS = [
 ]
 
 
+_ACTIVITY_JS = """
+(function(){
+  var depth = 0;
+  function bar(){ return document.getElementById('zefe-progress'); }
+  function pill(){ return document.getElementById('zefe-activity'); }
+  function paint(on){
+    var b = bar(), p = pill();
+    if (b) { if (on) { b.classList.add('is-active'); } else { b.classList.remove('is-active'); } }
+    if (p) { if (on) { p.classList.add('is-active'); } else { p.classList.remove('is-active'); } }
+  }
+  function show(){ depth = depth + 1; paint(true); }
+  function hide(force){
+    depth = force ? 0 : Math.max(0, depth - 1);
+    if (depth === 0) { paint(false); }
+  }
+  function press(el){
+    if (!el || !el.classList) return;
+    el.classList.add('zefe-pressed');
+    setTimeout(function(){ el.classList.remove('zefe-pressed'); }, 200);
+  }
+  function isHtmx(el){
+    if (!el || !el.getAttribute) return false;
+    return ['hx-get','hx-post','hx-put','hx-patch','hx-delete'].some(function(a){
+      return el.hasAttribute(a);
+    });
+  }
+  document.body.addEventListener('htmx:beforeRequest', function(){ show(); });
+  document.body.addEventListener('htmx:afterRequest', function(){ hide(false); });
+  document.body.addEventListener('htmx:responseError', function(){ hide(true); });
+  document.body.addEventListener('htmx:sendError', function(){ hide(true); });
+  document.body.addEventListener('htmx:timeout', function(){ hide(true); });
+  document.addEventListener('click', function(e){
+    var el = e.target && e.target.closest ? e.target.closest('a[href], button') : null;
+    if (!el || el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return;
+    press(el);
+    if (isHtmx(el)) return;
+    if (el.tagName === 'A') {
+      var href = el.getAttribute('href') || '';
+      if (!href || href.charAt(0) === '#' || el.target === '_blank') return;
+      if (href.indexOf('javascript:') === 0 || href.indexOf('mailto:') === 0) return;
+      show();
+    }
+  }, true);
+  document.addEventListener('submit', function(e){
+    var f = e.target;
+    if (!f || isHtmx(f)) return;
+    show();
+  }, true);
+  window.addEventListener('pageshow', function(){ hide(true); });
+  window.addEventListener('load', function(){ hide(true); });
+})();
+"""
+
+
+def activity_feedback() -> tuple:
+    """Reusable click / loading feedback shown on every page.
+
+    A thin indigo progress bar plus a small activity pill confirm that a
+    navigation, form submit or htmx request is in flight.
+    """
+    return (
+        Div(
+            Div(cls="zefe-progress-bar"),
+            id="zefe-progress",
+            cls="zefe-progress",
+            aria_hidden="true",
+        ),
+        Div(
+            icon("loader", cls="h-4 w-4 text-indigo-600 animate-spin"),
+            Span(
+                "Working...",
+                cls="text-xs font-semibold text-slate-700",
+            ),
+            id="zefe-activity",
+            cls="zefe-activity",
+            role="status",
+            aria_live="polite",
+        ),
+        Script(_ACTIVITY_JS),
+    )
+
+
 def _nav_link(label: str, href: str, icon_name: str, *, active: bool) -> A:
     base = (
         "flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium "
@@ -92,7 +174,7 @@ def sidebar(
                             cls="text-sm font-semibold text-slate-900 truncate",
                         ),
                         P(
-                            business_id or "—",
+                            business_id or "-",
                             cls="text-xs text-slate-500 truncate font-mono",
                         ),
                         cls="min-w-0",
@@ -176,6 +258,7 @@ def auth_layout(page_title: str, *content) -> Html:
         page_head(page_title),
         Body(
             Main(*content, cls="font-['Inter']"),
+            *activity_feedback(),
             cls="font-['Inter'] text-slate-900 antialiased bg-slate-50",
         ),
     )
@@ -207,6 +290,7 @@ def app_shell(
         page_head(page_title),
         Body(
             Div(*body_children, cls="flex min-h-screen bg-slate-50"),
+            *activity_feedback(),
             cls="font-['Inter'] text-slate-900 antialiased",
         ),
     )
