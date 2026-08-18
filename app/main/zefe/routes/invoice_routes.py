@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Optional
@@ -94,6 +95,12 @@ def _transmit_badge(transmitted: bool) -> Span:
 def _invoice_row(item: dict) -> Tr:
     irn = item.get("irn", "")
     href = f"/invoices/{irn}"
+    # Row clicks navigate through the shared feedback helper so the global
+    # progress bar / activity pill rises immediately, exactly as it does for a
+    # real link, and still clears on page show / load / visibility change.
+    nav_js = (
+        f"return window.zefeNav && window.zefeNav({json.dumps(href)}, event);"
+    )
     cell_cls = "px-4 py-3 cursor-pointer"
     return Tr(
         Td(
@@ -102,32 +109,32 @@ def _invoice_row(item: dict) -> Tr:
                 cls="text-sm font-mono text-indigo-600",
             ),
             cls=cell_cls,
-            onclick=f"window.location='{href}'",
+            onclick=nav_js,
         ),
         Td(
             item.get("customer_name", ""),
             cls="px-4 py-3 text-sm text-slate-900 max-w-xs truncate cursor-pointer",
-            onclick=f"window.location='{href}'",
+            onclick=nav_js,
         ),
         Td(
             item.get("issue_date", ""),
             cls="px-4 py-3 text-sm text-slate-700 whitespace-nowrap cursor-pointer",
-            onclick=f"window.location='{href}'",
+            onclick=nav_js,
         ),
         Td(
             f"{item.get('currency', '')} {float(item.get('payable_amount', 0)):.2f}",
             cls="px-4 py-3 text-sm font-medium text-slate-900 text-right whitespace-nowrap cursor-pointer",
-            onclick=f"window.location='{href}'",
+            onclick=nav_js,
         ),
         Td(
             _status_badge(item.get("payment_status", "")),
             cls="px-4 py-3 cursor-pointer",
-            onclick=f"window.location='{href}'",
+            onclick=nav_js,
         ),
         Td(
             _transmit_badge(bool(item.get("transmitted", False))),
             cls="px-4 py-3 cursor-pointer",
-            onclick=f"window.location='{href}'",
+            onclick=nav_js,
         ),
         Td(
             A(
@@ -139,6 +146,7 @@ def _invoice_row(item: dict) -> Tr:
             ),
             cls="px-4 py-3 text-right",
         ),
+        data_zefe_nav="1",
         cls="border-b border-slate-100 hover:bg-slate-50 transition-colors",
     )
 

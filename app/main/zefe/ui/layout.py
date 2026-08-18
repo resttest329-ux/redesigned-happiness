@@ -163,12 +163,13 @@ _ACTIVITY_JS = """
 
   document.addEventListener('click', function(e){
     var el = e.target && e.target.closest
-      ? e.target.closest('a[href], button, [role=\"button\"]')
+      ? e.target.closest('a[href], button, [role=\"button\"], [data-zefe-nav]')
       : null;
     if (!el) return;
     if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return;
     press(el);
     if (isHtmx(el)) return;
+    if (el.hasAttribute('data-zefe-nav')) { startNav(); return; }
     if (navigates(el, e)) startNav();
   }, true);
 
@@ -177,6 +178,16 @@ _ACTIVITY_JS = """
     if (!f || isHtmx(f) || e.defaultPrevented) return;
     startNav();
   }, true);
+
+  /* Programmatic navigation (e.g. clickable table rows) can raise the same
+     bounded feedback as a real link, then hand off to the browser. */
+  window.zefeStartNav = startNav;
+  window.zefeNav = function(href, evt){
+    if (evt && (evt.metaKey || evt.ctrlKey || evt.shiftKey || evt.altKey)) return true;
+    startNav();
+    if (href) { window.location.assign(href); }
+    return false;
+  };
 
   document.addEventListener('visibilitychange', function(){
     if (document.hidden) reset();

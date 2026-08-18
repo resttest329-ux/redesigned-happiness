@@ -1366,35 +1366,152 @@ def check_zefe_customer_directory_wiring() -> None:
 
 
 def check_zefe_stage3_ux() -> None:
-    print("[zefe] stage 3 catalog / one-off UX\u2026", flush=True)
+    """Stage 3 must offer exactly two non-competing ways to add a line.
+
+    The saved-item flow is a search-first picker (never a plain dropdown of
+    the whole catalog), and the one-off flow opens manual item details plus
+    the HS / ISIC lookup on their own. A saved-item line never renders the
+    manual classification fields beside its locked identity.
+    """
+    print("[zefe] stage 3 saved-item / one-off UX\u2026", flush=True)
     _purge_shared_modules()
     text = (Path(ZEFE) / "routes" / "wizard_routes.py").read_text()
     for marker in (
-        "_row_catalog_select",
+        "_add_actions",
+        "_row_identity_cell",
         "_row_adjust_cell",
-        "_catalog_block",
+        "_saved_item_picker_modal",
+        "_picker_search_input",
         "_catalog_results",
         "_saved_item_summary",
-        "_lookup_block_cleared",
+        "_locked_basis_row",
         "_line_from_catalog_item",
+        "Add saved item",
+        "Add one-off item",
+        "/invoices/wizard/line/picker",
+        "/invoices/wizard/line/one-off",
         "/invoices/wizard/line/catalog",
         "/invoices/wizard/line/catalog/apply",
-        "/invoices/wizard/step/3/rows/add",
         "/invoices/wizard/line/{idx}/update",
-        "One-off line",
+        "item_source_badge",
     ):
         assert marker in text, f"stage 3 lost wiring: {marker}"
+    assert text.count("Manage items") == 1, (
+        "the catalog link belongs only in the empty saved-item state, never "
+        "inside a selected saved-item detail"
+    )
     assert "manual = not _is_catalog_line(line)" in text, (
         "the line modal must know whether the row came from the catalog"
     )
     assert "if manual:" in text, (
         "the classification lookup must only render for one-off lines"
     )
+    for removed in (
+        "_row_catalog_select",
+        "_catalog_block",
+        "_add_row_button",
+        "/invoices/wizard/step/3/rows/add",
+    ):
+        assert removed not in text, (
+            "the two flows must not compete with the old inline catalog "
+            f"dropdown / blank row path: {removed}"
+        )
     for marker in ("discount_type", "fee_type", "percent", "flat"):
         assert marker in text, (
             f"per-row discount / fee controls lost wiring: {marker}"
         )
-    print("  ✓ catalog selection, one-off path and row adjustments present")
+    print("  \u2713 search-first saved items, one-off path, locked identity")
+
+
+# --------------------------------------------------------------------------
+# 7b. Shared item presentation helpers (Items page + wizard stage 3)
+# --------------------------------------------------------------------------
+
+#: Every presentation helper both item surfaces must share.
+ITEM_PRESENTATION_HELPERS: tuple[str, ...] = (
+    "item_kind",
+    "item_code",
+    "item_category",
+    "item_sku",
+    "item_kind_badge",
+    "item_classification_badge",
+    "item_classification_meta",
+    "item_status_badge",
+    "item_source_badge",
+    "item_sku_text",
+    "unit_chip",
+    "item_price_summary",
+    "item_identity",
+    "item_empty_panel",
+    "item_search_empty_copy",
+)
+
+#: Local badge / metadata builders that must stay deleted from the routes.
+STALE_ITEM_PRESENTATION_DEFS: tuple[tuple[str, str], ...] = (
+    ("routes/item_routes.py", "def _kind_of("),
+    ("routes/item_routes.py", "def _kind_badge("),
+    ("routes/item_routes.py", "def _status_badge("),
+)
+
+
+def check_zefe_item_presentation_shared() -> None:
+    """One presentation layer for items, reused by both surfaces.
+
+    The Items page and invoice stage 3 render the same object, so the badges,
+    HS / ISIC metadata, unit / SKU treatment, status / source pills and empty
+    state tone must all come from ``ui/components.py`` rather than being
+    re-implemented per route module.
+    """
+    print("[zefe] shared item presentation helpers\u2026", flush=True)
+    _purge_shared_modules()
+    components_path = Path(ZEFE) / "ui" / "components.py"
+    tree = ast.parse(components_path.read_text(), filename=str(components_path))
+    defined = {
+        node.name
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    missing = [n for n in ITEM_PRESENTATION_HELPERS if n not in defined]
+    if missing:
+        raise AssertionError(
+            "ui/components.py is missing shared item helpers: "
+            + ", ".join(missing)
+        )
+
+    items = (Path(ZEFE) / "routes" / "item_routes.py").read_text()
+    wizard = (Path(ZEFE) / "routes" / "wizard_routes.py").read_text()
+    for name, text in (("item_routes", items), ("wizard_routes", wizard)):
+        for helper in (
+            "item_kind",
+            "item_kind_badge",
+            "item_classification_badge",
+            "item_identity",
+            "unit_chip",
+            "item_search_empty_copy",
+        ):
+            assert helper in text, (
+                f"{name} must reuse the shared {helper} helper instead of "
+                "its own item presentation code"
+            )
+
+    for rel, stale in STALE_ITEM_PRESENTATION_DEFS:
+        text = (Path(ZEFE) / rel).read_text()
+        assert stale not in text, (
+            f"{rel} still defines its own '{stale}' — item presentation "
+            "belongs to ui/components.py only"
+        )
+
+    for legacy in (
+        "bg-indigo-100 text-indigo-700",
+        "bg-purple-100 text-purple-700",
+    ):
+        assert legacy not in items and legacy not in wizard, (
+            "item kind badges must be built by item_kind_badge, not by "
+            f"hand-rolled classes ({legacy})"
+        )
+    print(
+        "  \u2713 items page and invoice stage 3 share one presentation layer"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -2230,6 +2347,7 @@ def main() -> int:
         check_zefe_derived_fields_readonly,
         check_zefe_customer_directory_wiring,
         check_zefe_stage3_ux,
+        check_zefe_item_presentation_shared,
         check_zefe_lookup_ranking,
         check_zefe_pdf_item_name_only,
         check_no_em_dashes,

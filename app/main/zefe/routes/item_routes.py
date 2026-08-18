@@ -59,8 +59,17 @@ from ui.components import (
     guidance_panel,
     guidance_text,
     import_rules,
+    item_category,
+    item_classification_badge,
+    item_classification_meta,
+    item_identity,
+    item_kind,
+    item_kind_badge,
+    item_search_empty_copy,
+    item_status_badge,
     primary_button,
     table_container,
+    unit_chip,
 )
 from ui.icons import icon
 from ui.layout import app_shell
@@ -213,61 +222,8 @@ def _unit_select(value: str = DEFAULT_UNIT_CODE) -> Div:
     )
 
 
-def _kind_of(item: dict) -> str:
-    if (item or {}).get("hsn_code"):
-        return "product"
-    if (item or {}).get("isic_code"):
-        return "service"
-    return ""
-
-
-def _kind_badge(kind: str) -> Span:
-    if kind == "product":
-        return Span(
-            "Product",
-            cls=(
-                "inline-flex items-center px-2 py-0.5 rounded-full "
-                "text-[10px] font-semibold uppercase tracking-wider "
-                "bg-indigo-100 text-indigo-700 w-fit"
-            ),
-        )
-    if kind == "service":
-        return Span(
-            "Service",
-            cls=(
-                "inline-flex items-center px-2 py-0.5 rounded-full "
-                "text-[10px] font-semibold uppercase tracking-wider "
-                "bg-purple-100 text-purple-700 w-fit"
-            ),
-        )
-    return Span(
-        "Unclassified",
-        cls=(
-            "inline-flex items-center px-2 py-0.5 rounded-full text-[10px] "
-            "font-semibold uppercase tracking-wider bg-slate-100 "
-            "text-slate-600 w-fit"
-        ),
-    )
-
-
-def _status_badge(is_active: bool) -> Span:
-    if is_active:
-        return Span(
-            "Active",
-            cls=(
-                "inline-flex items-center px-2 py-0.5 rounded-full text-xs "
-                "font-medium bg-emerald-50 text-emerald-700 "
-                "border border-emerald-200 w-fit"
-            ),
-        )
-    return Span(
-        "Inactive",
-        cls=(
-            "inline-flex items-center px-2 py-0.5 rounded-full text-xs "
-            "font-medium bg-slate-50 text-slate-600 "
-            "border border-slate-200 w-fit"
-        ),
-    )
+# Item badges, classification metadata, identity and status all come from
+# ui.components so the Items page and invoice stage 3 stay visually identical.
 
 
 # --------------------------------------------------------------------------
@@ -348,41 +304,13 @@ def _classification_block(item: dict) -> Div:
     isic = (item or {}).get("isic_code") or ""
     isic_cat = (item or {}).get("isic_category") or ""
 
-    if hsn:
+    if hsn or isic:
         badge = Div(
             icon("check-circle", cls="h-4 w-4 text-emerald-600 shrink-0"),
-            _kind_badge("product"),
+            item_kind_badge(item_kind(item)),
+            item_classification_badge(item, tone="white"),
             Span(
-                f"HS {hsn}",
-                cls=(
-                    "inline-flex items-center px-2 py-0.5 rounded-md "
-                    "text-[11px] font-mono font-semibold bg-white "
-                    "text-emerald-800 border border-emerald-200 shrink-0"
-                ),
-            ),
-            Span(
-                hsn_cat,
-                cls="text-xs text-emerald-700 truncate min-w-0",
-            ),
-            cls=(
-                "flex items-center gap-2 p-2.5 bg-emerald-50 rounded-lg "
-                "border border-emerald-200"
-            ),
-        )
-    elif isic:
-        badge = Div(
-            icon("check-circle", cls="h-4 w-4 text-emerald-600 shrink-0"),
-            _kind_badge("service"),
-            Span(
-                f"ISIC {isic}",
-                cls=(
-                    "inline-flex items-center px-2 py-0.5 rounded-md "
-                    "text-[11px] font-mono font-semibold bg-white "
-                    "text-emerald-800 border border-emerald-200 shrink-0"
-                ),
-            ),
-            Span(
-                isic_cat,
+                item_category(item),
                 cls="text-xs text-emerald-700 truncate min-w-0",
             ),
             cls=(
@@ -424,7 +352,7 @@ def _lookup_hit_row(hit: dict) -> Button:
     return Button(
         Div(
             Div(
-                _kind_badge(kind),
+                item_kind_badge(kind),
                 P(
                     label,
                     cls=(
@@ -708,9 +636,7 @@ def _item_form_modal(
 
 def _item_row(item: dict) -> Tr:
     iid = item.get("id", "")
-    kind = _kind_of(item)
-    code = item.get("hsn_code") or item.get("isic_code") or "—"
-    category = item.get("hsn_category") or item.get("isic_category") or ""
+    kind = item_kind(item)
     is_active = bool(item.get("is_active", True))
     unit = coerce_unit_code(item.get("price_unit"))
     edit_attrs = {
@@ -790,32 +716,13 @@ def _item_row(item: dict) -> Tr:
             cls="px-4 py-3 w-10",
         ),
         Td(
-            Div(
-                P(
-                    item.get("name", ""),
-                    cls="text-sm font-semibold text-slate-900 truncate",
-                ),
-                P(
-                    item.get("sku") or "No SKU",
-                    cls="text-xs text-slate-500 font-mono truncate",
-                ),
-                cls="min-w-0",
-            ),
+            item_identity(item, sku_fallback="No SKU"),
             cls=f"{cell} max-w-xs",
             **edit_attrs,
         ),
-        Td(_kind_badge(kind), cls=cell, **edit_attrs),
+        Td(item_kind_badge(kind), cls=cell, **edit_attrs),
         Td(
-            Div(
-                P(
-                    code,
-                    cls="text-sm font-mono text-slate-700 whitespace-nowrap",
-                ),
-                P(category, cls="text-xs text-slate-500 truncate")
-                if category
-                else "",
-                cls="min-w-0",
-            ),
+            item_classification_meta(item),
             cls=f"{cell} max-w-[14rem]",
             **edit_attrs,
         ),
@@ -828,19 +735,11 @@ def _item_row(item: dict) -> Tr:
             **edit_attrs,
         ),
         Td(
-            Span(
-                unit,
-                title=unit_code_label(unit),
-                cls=(
-                    "inline-flex items-center px-2 py-0.5 rounded-md "
-                    "text-[11px] font-mono font-semibold bg-slate-100 "
-                    "text-slate-700 border border-slate-200 w-fit"
-                ),
-            ),
+            unit_chip(unit, unit_code_label(unit)),
             cls=cell,
             **edit_attrs,
         ),
-        Td(_status_badge(is_active), cls=cell, **edit_attrs),
+        Td(item_status_badge(is_active), cls=cell, **edit_attrs),
         Td(
             Div(
                 duplicate_control,
@@ -873,17 +772,27 @@ def _item_table(
     items: list[dict], active: bool, searching: bool = False
 ) -> Div:
     if not items:
+        # A filtered-out catalog is not an empty catalog, so never describe it
+        # as the user's first record. The copy comes from the shared helper so
+        # stage 3's saved-item picker uses the same tone.
+        scope = "active" if active else "inactive"
+        title, subtitle = item_search_empty_copy(
+            filtered=searching,
+            scope=scope,
+            noun="items",
+            empty_title="No items yet" if active else "No inactive items",
+            empty_subtitle=(
+                "Save your first catalog item so invoice lines only need a "
+                "quantity."
+                if active
+                else "Deactivated items will appear here and can be restored."
+            ),
+        )
         if searching:
-            # A filtered-out catalog is not an empty catalog, so never
-            # describe it as the user's first record.
-            scope = "active" if active else "inactive"
             return empty_state(
                 icon_name="search",
-                title="No items match your filters",
-                subtitle=(
-                    f"No {scope} item matches this search or type filter. "
-                    "Try a different keyword or SKU, or clear the filters."
-                ),
+                title=title,
+                subtitle=subtitle,
                 action_link=A(
                     icon("x", cls="h-4 w-4"),
                     Span("Clear filters"),
@@ -898,13 +807,8 @@ def _item_table(
             )
         return empty_state(
             icon_name="package",
-            title="No items yet" if active else "No inactive items",
-            subtitle=(
-                "Save your first catalog item so invoice lines only need a "
-                "quantity."
-                if active
-                else "Deactivated items will appear here and can be restored."
-            ),
+            title=title,
+            subtitle=subtitle,
             action_link=Button(
                 icon("plus", cls="h-4 w-4"),
                 Span("Add item"),

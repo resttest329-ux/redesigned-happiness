@@ -863,3 +863,342 @@ def empty_state(
         cls="text-center py-16 bg-white rounded-2xl border border-slate-200",
         id=id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Shared item presentation helpers
+#
+# The Items page (routes/item_routes.py) and invoice stage 3
+# (routes/wizard_routes.py) present the same underlying thing: a catalog item,
+# or an invoice line derived from one. These helpers are the single source of
+# truth for that presentation, so product / service badges, HS / ISIC
+# metadata, unit and SKU treatment, status / source pills and empty-state tone
+# stay identical on both surfaces.
+#
+# They read both shapes without renaming or changing any field:
+#   catalog item -> sku, hsn_code / hsn_category, isic_code / isic_category
+#   wizard line  -> sellers_item_identification, hsn_code / product_category,
+#                   isic_code / service_category
+# ---------------------------------------------------------------------------
+
+ITEM_KIND_PRODUCT = "product"
+ITEM_KIND_SERVICE = "service"
+
+#: User-facing label per classification kind.
+ITEM_KIND_LABELS: dict[str, str] = {
+    ITEM_KIND_PRODUCT: "Product",
+    ITEM_KIND_SERVICE: "Service",
+}
+
+#: Code prefix shown beside the classification code.
+ITEM_CODE_PREFIXES: dict[str, str] = {
+    ITEM_KIND_PRODUCT: "HS",
+    ITEM_KIND_SERVICE: "ISIC",
+}
+
+_PILL_CLS = (
+    "inline-flex items-center px-2 py-0.5 rounded-full text-[10px] "
+    "font-semibold uppercase tracking-wider w-fit shrink-0"
+)
+_CODE_PILL_CLS = (
+    "inline-flex items-center px-2 py-0.5 rounded-md text-[11px] "
+    "font-mono font-semibold w-fit shrink-0"
+)
+
+_KIND_TONES: dict[str, str] = {
+    ITEM_KIND_PRODUCT: "bg-indigo-50 text-indigo-700 border border-indigo-200",
+    ITEM_KIND_SERVICE: "bg-purple-50 text-purple-700 border border-purple-200",
+}
+_UNCLASSIFIED_TONE = "bg-slate-100 text-slate-600 border border-slate-200"
+
+_CODE_TONES: dict[str, str] = {
+    "emerald": "bg-emerald-50 text-emerald-700 border border-emerald-200",
+    "white": "bg-white text-emerald-800 border border-emerald-200",
+    "slate": "bg-slate-100 text-slate-700 border border-slate-200",
+}
+
+
+def item_kind(item) -> str:
+    """``"product"``, ``"service"`` or ``""`` for an item or a wizard line."""
+    item = item or {}
+    if str(item.get("hsn_code") or "").strip():
+        return ITEM_KIND_PRODUCT
+    if str(item.get("isic_code") or "").strip():
+        return ITEM_KIND_SERVICE
+    return ""
+
+
+def item_code(item) -> str:
+    """The single classification code carried by an item or a line."""
+    item = item or {}
+    return str(item.get("hsn_code") or item.get("isic_code") or "").strip()
+
+
+def item_category(item) -> str:
+    """The classification category, whichever field name carries it."""
+    item = item or {}
+    for key in (
+        "hsn_category",
+        "isic_category",
+        "product_category",
+        "service_category",
+    ):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def item_sku(item) -> str:
+    """The seller's own code, whichever field name carries it."""
+    item = item or {}
+    return str(
+        item.get("sku") or item.get("sellers_item_identification") or ""
+    ).strip()
+
+
+def item_kind_badge(kind: str, cls: str = "") -> Span:
+    """Product / service / unclassified pill."""
+    kind = (kind or "").strip().lower()
+    label = ITEM_KIND_LABELS.get(kind, "Unclassified")
+    tone = _KIND_TONES.get(kind, _UNCLASSIFIED_TONE)
+    return Span(label, cls=f"{_PILL_CLS} {tone} {cls}".strip())
+
+
+def item_classification_badge(
+    item,
+    *,
+    missing_label: str = "Details needed",
+    tone: str = "emerald",
+    cls: str = "",
+) -> Span:
+    """``HS 1006.10`` / ``ISIC 7020`` chip, or an amber 'missing' pill."""
+    kind = item_kind(item)
+    code = item_code(item)
+    if not kind or not code:
+        return Span(
+            missing_label,
+            cls=(
+                f"{_PILL_CLS} bg-amber-50 text-amber-700 "
+                f"border border-amber-200 {cls}"
+            ).strip(),
+        )
+    prefix = ITEM_CODE_PREFIXES.get(kind, "")
+    palette = _CODE_TONES.get(tone, _CODE_TONES["emerald"])
+    return Span(
+        f"{prefix} {code}".strip(),
+        cls=f"{_CODE_PILL_CLS} {palette} {cls}".strip(),
+    )
+
+
+def item_classification_meta(
+    item,
+    *,
+    show_category: bool = True,
+    missing_label: str = "Not classified",
+    cls: str = "",
+) -> Div:
+    """Prefixed code above its category, for compact table cells."""
+    kind = item_kind(item)
+    code = item_code(item)
+    category = item_category(item)
+    prefix = ITEM_CODE_PREFIXES.get(kind, "")
+    label = f"{prefix} {code}".strip() if code else missing_label
+    code_cls = (
+        "text-sm font-mono text-slate-700 whitespace-nowrap"
+        if code
+        else "text-sm text-slate-400 whitespace-nowrap"
+    )
+    children = [P(label, cls=code_cls)]
+    if show_category and category:
+        children.append(P(category, cls="text-xs text-slate-500 truncate"))
+    return Div(*children, cls=f"min-w-0 {cls}".strip())
+
+
+def item_status_badge(is_active: bool, cls: str = "") -> Span:
+    """Active / inactive catalog state."""
+    if is_active:
+        return Span(
+            "Active",
+            cls=(
+                "inline-flex items-center px-2 py-0.5 rounded-full text-xs "
+                "font-medium bg-emerald-50 text-emerald-700 "
+                f"border border-emerald-200 w-fit shrink-0 {cls}"
+            ).strip(),
+        )
+    return Span(
+        "Inactive",
+        cls=(
+            "inline-flex items-center px-2 py-0.5 rounded-full text-xs "
+            "font-medium bg-slate-50 text-slate-600 "
+            f"border border-slate-200 w-fit shrink-0 {cls}"
+        ).strip(),
+    )
+
+
+def item_source_badge(is_saved: bool, cls: str = "") -> Span:
+    """Where an invoice line came from: the catalog, or this invoice only."""
+    if is_saved:
+        return Span(
+            "Saved item",
+            cls=(
+                f"{_PILL_CLS} bg-indigo-50 text-indigo-700 "
+                f"border border-indigo-200 {cls}"
+            ).strip(),
+        )
+    return Span(
+        "One-off line",
+        cls=f"{_PILL_CLS} {_UNCLASSIFIED_TONE} {cls}".strip(),
+    )
+
+
+def unit_chip(code: str, label: str = "", *, cls: str = "") -> Span:
+    """Official UN/ECE unit code chip (never free text)."""
+    code = (code or "").strip()
+    return Span(
+        code or "-",
+        title=label or code,
+        cls=(
+            f"{_CODE_PILL_CLS} bg-slate-100 text-slate-700 "
+            f"border border-slate-200 {cls}"
+        ).strip(),
+    )
+
+
+def item_sku_text(sku: str, *, inline: bool = False, cls: str = ""):
+    """``SKU ABC-1`` in mono. Returns ``""`` when there is no SKU."""
+    sku = str(sku or "").strip()
+    if not sku:
+        return ""
+    if inline:
+        return Span(
+            f"SKU {sku}",
+            cls=(
+                f"text-[11px] font-mono text-slate-400 truncate shrink-0 {cls}"
+            ).strip(),
+        )
+    return P(
+        f"SKU {sku}",
+        cls=f"text-[11px] font-mono text-slate-400 truncate {cls}".strip(),
+    )
+
+
+def item_price_summary(unit_price, unit: str, *, cls: str = "") -> Span:
+    """``1500.00 / EA`` price basis, shown beside a saved item."""
+    try:
+        amount = float(unit_price or 0)
+    except (TypeError, ValueError):
+        amount = 0.0
+    return Span(
+        f"{amount:.2f} / {(unit or '').strip() or '-'}",
+        cls=f"text-xs font-semibold text-slate-700 shrink-0 {cls}".strip(),
+    )
+
+
+def item_identity(
+    item,
+    *,
+    badges: list | None = None,
+    fallback_name: str = "",
+    sku_fallback: str = "",
+    cls: str = "",
+) -> Div:
+    """Compact item identity: name, then badges and / or the SKU beneath."""
+    item = item or {}
+    name = str(item.get("name") or "").strip() or fallback_name
+    sku = item_sku(item)
+    children = [
+        P(
+            name,
+            cls="text-sm font-semibold text-slate-900 truncate",
+        )
+    ]
+    if badges:
+        row = [b for b in badges if b is not None]
+        sku_node = item_sku_text(sku, inline=True)
+        if sku_node != "":
+            row.append(sku_node)
+        children.append(
+            Div(
+                *row,
+                cls="flex items-center gap-1.5 mt-1 min-w-0 flex-wrap",
+            )
+        )
+    elif sku or sku_fallback:
+        children.append(
+            P(
+                f"SKU {sku}" if sku else sku_fallback,
+                cls="text-xs text-slate-500 font-mono truncate",
+            )
+        )
+    return Div(*children, cls=f"min-w-0 {cls}".strip())
+
+
+def item_empty_panel(
+    title: str,
+    subtitle: str,
+    action=None,
+    *,
+    icon_name: str = "package",
+    id: str | None = None,
+    cls: str = "",
+) -> Div:
+    """Compact in-panel empty state (saved-item picker, inline results)."""
+    children = [
+        icon(icon_name, cls="h-8 w-8 text-slate-300 mx-auto mb-2"),
+        P(title, cls="text-sm font-semibold text-slate-700"),
+        P(
+            subtitle,
+            cls="text-xs text-slate-500 mt-1 leading-relaxed",
+        ),
+    ]
+    if action is not None:
+        children.append(Div(action, cls="flex justify-center mt-3"))
+    return Div(
+        Div(*children, cls="px-4 py-6 text-center"),
+        id=id,
+        cls=(
+            f"mt-2 rounded-xl border border-slate-200 bg-slate-50/60 {cls}"
+        ).strip(),
+    )
+
+
+def item_search_empty_copy(
+    *,
+    query: str = "",
+    filtered: bool = False,
+    scope: str = "",
+    noun: str = "items",
+    empty_title: str = "",
+    empty_subtitle: str = "",
+    extra_hint: str = "",
+) -> tuple[str, str]:
+    """One tone of voice for 'nothing matched' vs 'nothing saved yet'.
+
+    ``query`` is a user search term, ``filtered`` covers search plus dropdown
+    filters, and the ``empty_*`` arguments describe the genuinely empty case.
+    """
+    q = " ".join(str(query or "").split())
+    prefix = f"{scope.strip()} " if scope and scope.strip() else ""
+    hint = f" {extra_hint.strip()}" if extra_hint and extra_hint.strip() else ""
+
+    if q:
+        return (
+            f"No {noun} match your search",
+            (
+                f"Nothing in your {prefix}catalog matches \u201c{q}\u201d. "
+                f"Try a shorter keyword or the SKU.{hint}"
+            ),
+        )
+    if filtered:
+        return (
+            f"No {noun} match your filters",
+            (
+                f"No {prefix}item matches this search or type filter. Try a "
+                f"different keyword or SKU, or clear the filters.{hint}"
+            ),
+        )
+    return (
+        empty_title or f"No {prefix}{noun} yet",
+        empty_subtitle or f"Saved {noun} will appear here.",
+    )

@@ -129,12 +129,16 @@ app/main/zefe
    self billed types reveal a required billing reference.
 2. **Parties.** Supplier is read only and comes from the business profile.
    Customer is picked from the directory or typed once for a one off invoice.
-3. **Line items.** One row per line. A row can point at a saved catalog item,
-   which fills name, SKU, description, classification, unit price and unit
-   code, or stay a one off line whose details are entered in the row modal.
-   Quantity, discount and fee are set inline per row as none, percent or a
-   fixed amount. The classification lookup only appears for one off lines, so
-   a catalog backed row cannot drift away from its saved classification.
+3. **Line items.** Two non competing ways to add a line. **Add saved item**
+   opens a search first picker over the catalog and adds the item as a locked
+   line: name, SKU, description, classification, unit code and base quantity
+   come from the catalog and stay read only, and only quantity, an invoice
+   local unit price override, discount and additional charge are editable.
+   **Add one off item** opens manual item details together with the HS / ISIC
+   lookup, and that lookup is never shown beside a selected saved item. Every
+   row keeps quantity, unit price, discount and additional charge inline as
+   none, percent or a fixed amount, with the line total and the invoice totals
+   updating on each change.
 4. **Review and sign.** A guided lifecycle: validate, sign, transmit,
    finish. Locked stages unlock as the previous one completes. A first time
    user can create the signing secret inline without leaving the wizard.
