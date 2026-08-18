@@ -39,7 +39,7 @@ from deps import (
     get_session_id,
     require_session,
 )
-from services import api_client, auth_service
+from services import api_client, auth_service, lookup_ranking
 from services.errors import (
     extract_api_error_detail,
     normalize_transmission_error,
@@ -1322,7 +1322,10 @@ def _apply_row_form(
             else:
                 out["price_amount"] = price
 
-    for prefix, label in (("discount", "Discount"), ("fee", "Fee")):
+    for prefix, label in (
+        ("discount", "Discount"),
+        ("fee", "Additional charge"),
+    ):
         kind = (form.get(f"{prefix}_type") or "none").strip().lower()
         if kind not in ("none", "percent", "flat"):
             kind = "none"
@@ -1353,12 +1356,18 @@ def _apply_row_form(
 
 
 def _row_update_attrs(idx: int) -> dict:
+    """Inline row inputs: post the whole row, swap rows, OOB swap totals.
+
+    ``hx_sync`` keeps only the newest in-flight row request, and because every
+    request carries every field of the row no edit can be lost by an abort.
+    """
     return {
         "hx_post": f"/invoices/wizard/line/{idx}/update",
         "hx_trigger": "change",
         "hx_target": "#line-rows",
         "hx_swap": "outerHTML",
         "hx_include": f"#line-row-{idx} [data-row-field]",
+        "hx_sync": "closest tbody:replace",
         "data_row_field": "1",
     }
 
@@ -1528,7 +1537,7 @@ def _line_row(
             cls=_ROW_TD,
         ),
         _row_adjust_cell(idx, line, "discount", "Discount"),
-        _row_adjust_cell(idx, line, "fee", "Fee"),
+        _row_adjust_cell(idx, line, "fee", "Additional charge"),
         Td(
             P(
                 f"{currency} {total:,.2f}",
@@ -1544,7 +1553,7 @@ def _line_row(
                 Button(
                     icon("eye", cls="h-4 w-4"),
                     type="button",
-                    title="View or edit line details",
+                    title="Open line details",
                     aria_label=f"View details for line {idx + 1}",
                     hx_get=f"/invoices/wizard/line/{idx}/edit",
                     hx_target="#wizard-modal-area",
@@ -1611,8 +1620,8 @@ def _line_rows_table(wizard: dict, catalog_items: list[dict]) -> Div:
                 cls="text-base font-semibold text-slate-900",
             ),
             P(
-                "Add a row, then pick a saved item or open the row to enter "
-                "a one-off line.",
+                "Add your first row, then choose a saved item, or open the "
+                "row with the eye to type a one-off line.",
                 cls="text-sm text-slate-500 mt-1",
             ),
             cls=(
@@ -1629,7 +1638,7 @@ def _line_rows_table(wizard: dict, catalog_items: list[dict]) -> Div:
                     Th("Qty", cls=_ROW_TH),
                     Th("Unit price", cls=_ROW_TH),
                     Th("Discount", cls=_ROW_TH),
-                    Th("Fee", cls=_ROW_TH),
+                    Th("Additional charge", cls=_ROW_TH),
                     Th("Line total", cls=_ROW_TH_RIGHT),
                     Th("", cls="px-3 py-2.5"),
                     cls="border-b border-slate-200 bg-slate-50",
@@ -1704,7 +1713,11 @@ def _totals_card(wizard: dict, oob: bool = False) -> Div:
                 "border-slate-200 mt-2"
             ),
         ),
-        cls="bg-white border border-slate-200 rounded-xl p-5 mt-4",
+        P(
+            "Totals recalculate as soon as a row changes.",
+            cls="text-[11px] text-slate-400 mt-1",
+        ),
+        cls="bg-white border border-slate-200 rounded-2xl p-5 mt-4",
         **attrs,
     )
 
@@ -1960,11 +1973,11 @@ def _catalog_block(query: str, items: list[dict]) -> Div:
     return Div(
         Div(
             Label(
-                "Saved items",
+                "Use a saved item instead",
                 cls="block text-sm font-medium text-slate-700 mb-1.5",
             ),
             Span(
-                "Recommended",
+                "Shortcut",
                 cls=(
                     "inline-flex items-center px-2 py-0.5 rounded-full "
                     "text-[10px] font-semibold uppercase tracking-wider "
@@ -1975,9 +1988,9 @@ def _catalog_block(query: str, items: list[dict]) -> Div:
             cls="flex items-center justify-between gap-2",
         ),
         guidance_panel(
-            "Pick from your Items catalog to fill the name, SKU, "
-            "description, classification, unit price and unit code in one "
-            "click, then just set the quantity.",
+            "Choosing a saved item fills the name, SKU, description, "
+            "classification, price and unit for you. You can also pick it "
+            "straight from the row on the previous screen.",
             cls="mb-3",
         ),
         Div(
@@ -2072,6 +2085,93 @@ async def _load_catalog_items(
         return []
 
 
+def _pricing_section(line: dict, default_unit: str) -> Div:
+    """Quantity, price and the unit basis, grouped where they are used."""
+    return Div(
+        P(
+            "Pricing on this invoice",
+            cls=(
+                "text-[11px] font-bold uppercase tracking-wider "
+                "text-slate-500 mb-3"
+            ),
+        ),
+        Div(
+            _field(
+                name="invoiced_quantity",
+                label="Quantity",
+                type="number",
+                value=_fmt_num(line.get("invoiced_quantity"), "1"),
+                required=True,
+                helper="How many units you are billing on this line.",
+                min="1",
+                step="1",
+            ),
+            _field(
+                name="price_amount",
+                label="Unit price",
+                type="number",
+                value=_fmt_num(line.get("price_amount"), "0.00"),
+                required=True,
+                helper="Price for a single unit.",
+                min="0.01",
+                step="0.01",
+            ),
+            cls="grid grid-cols-1 md:grid-cols-2 gap-x-4",
+        ),
+        Div(
+            _unit_select_field(line.get("price_unit") or default_unit),
+            _field(
+                name="base_quantity",
+                label="Units the price covers",
+                type="number",
+                value=_fmt_num(line.get("base_quantity"), "1"),
+                required=True,
+                min="1",
+                step="1",
+                helper=(
+                    "Leave at 1 unless the unit price covers a multi unit pack."
+                ),
+            ),
+            cls="grid grid-cols-1 md:grid-cols-2 gap-x-4",
+        ),
+        cls="p-4 bg-slate-50/60 rounded-xl border border-slate-200 mb-4",
+    )
+
+
+def _adjustments_section(line: dict) -> Div:
+    return Div(
+        P(
+            "Discount and additional charge",
+            cls=(
+                "text-[11px] font-bold uppercase tracking-wider "
+                "text-slate-500 mb-3"
+            ),
+        ),
+        Div(
+            _paired_adjustment_field(
+                prefix="discount",
+                label="Discount",
+                line=line,
+                helper=(
+                    "Percent takes a % off the line, Flat amount takes a "
+                    "fixed amount off. Leave blank for none."
+                ),
+            ),
+            _paired_adjustment_field(
+                prefix="fee",
+                label="Additional charge",
+                line=line,
+                helper=(
+                    "Percent adds a % surcharge, Flat amount adds a fixed "
+                    "charge. Leave blank for none."
+                ),
+            ),
+            cls="grid grid-cols-1 md:grid-cols-2 gap-x-4",
+        ),
+        cls="p-4 bg-white rounded-xl border border-slate-200",
+    )
+
+
 def _line_form_fields(
     line: dict,
     *,
@@ -2129,15 +2229,6 @@ def _line_form_fields(
             )
         )
 
-    if not manual:
-        children.append(
-            guidance_panel(
-                "Quantity, price and adjustments are saved on this invoice "
-                "only. The saved item itself is not changed.",
-                cls="mb-4",
-            )
-        )
-
     children.extend(
         [
             Hidden(name="catalog_item_id", value=_line_catalog_id(line)),
@@ -2151,6 +2242,11 @@ def _line_form_fields(
                 name="service_category",
                 value=line.get("service_category", "") or "",
             ),
+        ]
+    )
+
+    if manual:
+        children.append(
             Div(
                 _field(
                     name="name",
@@ -2158,111 +2254,105 @@ def _line_form_fields(
                     value=line.get("name", "") or "",
                     placeholder="Web design services",
                     required=True,
-                    helper="Name of the product or service on this line.",
+                    helper="This is what prints on the invoice line.",
                 ),
                 _field(
                     name="sellers_item_identification",
                     label="SKU (optional)",
                     value=line.get("sellers_item_identification", "") or "",
-                    placeholder="Optional",
-                    helper="Your internal code for this item, if you have one.",
+                    placeholder="Your internal code",
+                    helper="Only if you track your own item codes.",
                 ),
                 cls="grid grid-cols-1 md:grid-cols-2 gap-x-4",
-            ),
+            )
+        )
+        children.append(
             _field(
                 name="description",
                 label="Description (optional)",
                 value=line.get("description", "") or "",
-                placeholder="Optional details",
-                helper="Any extra details about this product or service.",
-            ),
-            Div(
-                _field(
-                    name="invoiced_quantity",
-                    label="Quantity",
-                    type="number",
-                    value=_fmt_num(line.get("invoiced_quantity"), "1"),
-                    required=True,
-                    helper="How many units are you billing for on this line?",
-                    min="1",
-                    step="1",
+                placeholder="Extra detail for this line",
+                helper="Kept on the invoice record for your reference.",
+            )
+        )
+    else:
+        # A catalog backed row keeps the saved item identity intact; only the
+        # invoice specific numbers below are editable here.
+        children.extend(
+            [
+                Hidden(name="name", value=line.get("name", "") or ""),
+                Hidden(
+                    name="description",
+                    value=line.get("description", "") or "",
                 ),
-                _field(
-                    name="price_amount",
-                    label="Unit price",
-                    type="number",
-                    value=_fmt_num(line.get("price_amount"), "0.00"),
-                    required=True,
-                    helper="Price for a single unit on this line.",
-                    min="0.01",
-                    step="0.01",
+                Hidden(
+                    name="sellers_item_identification",
+                    value=line.get("sellers_item_identification", "") or "",
                 ),
-                cls="grid grid-cols-1 md:grid-cols-2 gap-x-4",
-            ),
-            Div(
-                _paired_adjustment_field(
-                    prefix="discount",
-                    label="Discount",
-                    line=line,
-                    helper=(
-                        "Select Percent for a % off (0–100), or Flat "
-                        "for a fixed amount off (≥ 0)."
-                    ),
-                ),
-                _paired_adjustment_field(
-                    prefix="fee",
-                    label="Additional fee",
-                    line=line,
-                    helper=(
-                        "Select Percent for a % surcharge (0–100), or "
-                        "Flat for a fixed extra charge (≥ 0)."
-                    ),
-                ),
-                cls="grid grid-cols-1 md:grid-cols-2 gap-x-4",
-            ),
-            Div(
-                Div(
-                    Div(cls="flex-1 h-px bg-slate-200"),
-                    Span(
-                        "Advanced pricing",
-                        cls="px-3 text-[11px] font-bold uppercase tracking-widest text-slate-400 bg-white",
-                    ),
-                    Div(cls="flex-1 h-px bg-slate-200"),
-                    cls="flex items-center my-6",
-                ),
-                Div(
-                    guidance_panel(
-                        "These fields describe the invoice unit basis. Leave "
-                        f"them at the defaults ('1' and '{default_unit} - "
-                        f"{unit_code_label(default_unit)}') unless "
-                        "you bill "
-                        "metered units or multi-base quantities.",
-                        cls="mb-4",
-                    ),
-                    Div(
-                        _field(
-                            name="base_quantity",
-                            label="Base quantity",
-                            type="number",
-                            value=_fmt_num(line.get("base_quantity"), "1"),
-                            required=True,
-                            min="1",
-                            step="1",
-                            helper="Quantity unit price applies to.",
-                        ),
-                        _unit_select_field(
-                            line.get("price_unit") or default_unit
-                        ),
-                        cls="grid grid-cols-1 md:grid-cols-2 gap-x-4",
-                    ),
-                    cls="p-4 bg-slate-50/50 rounded-xl border border-slate-100",
-                ),
-                cls="mt-2",
-            ),
-        ]
-    )
+            ]
+        )
+
+    children.append(_pricing_section(line, default_unit))
+    children.append(_adjustments_section(line))
 
     return Div(*children, id="line-form-fields")
+
+
+def _lookup_empty_panel(query: str) -> Div:
+    """Actionable empty state for the shared classification lookup."""
+    children = [
+        icon("search", cls="h-8 w-8 text-slate-300 mx-auto mb-2"),
+        P(
+            f"No relevant products or services found for “{query}”.",
+            cls="text-sm font-semibold text-slate-700 text-center",
+        ),
+    ]
+    if lookup_ranking.is_code_query(query):
+        children.append(
+            P(
+                "That looks like a classification code, but nothing matches "
+                "it on the FIRS gateway. Check the format: products use ",
+                Span("XXXX.XX", cls="font-mono text-indigo-600"),
+                " (HS), services use ",
+                Span("XXXX", cls="font-mono text-indigo-600"),
+                " (ISIC). You can also search by name instead.",
+                cls=(
+                    "text-xs text-slate-500 text-center mt-2 "
+                    "leading-relaxed px-2"
+                ),
+            )
+        )
+    else:
+        children.append(
+            P(
+                "Try a broader term, a single keyword, a synonym, or the "
+                "classification code itself. Products use HS codes like ",
+                Span("1006.10", cls="font-mono text-indigo-600"),
+                " and services use ISIC codes like ",
+                Span("0112", cls="font-mono text-indigo-600"),
+                ". For example use ",
+                Span("“footwear”", cls="font-mono text-indigo-600"),
+                " instead of ",
+                Span("“sneakers”", cls="font-mono text-slate-500"),
+                ", or ",
+                Span("“consultancy”", cls="font-mono text-indigo-600"),
+                " instead of ",
+                Span("“consult”", cls="font-mono text-slate-500"),
+                ".",
+                cls=(
+                    "text-xs text-slate-500 text-center mt-2 "
+                    "leading-relaxed px-2"
+                ),
+            )
+        )
+    return Div(
+        Div(*children, cls="px-4 py-6"),
+        id="lookup-results",
+        cls=(
+            "mt-2 rounded-lg border border-slate-200 bg-slate-50/60 "
+            "animate-fade-in-up"
+        ),
+    )
 
 
 def _lookup_results_panel(hits: list[dict], query: str) -> Div:
@@ -2277,14 +2367,7 @@ def _lookup_results_panel(hits: list[dict], query: str) -> Div:
                 "border-slate-200 bg-white shadow-xs animate-fade-in-up"
             ),
         )
-    return Div(
-        P(
-            "No matching items found.",
-            cls="text-xs text-slate-500 px-3 py-3",
-        ),
-        id="lookup-results",
-        cls="mt-2 rounded-lg border border-slate-200 bg-slate-50/60",
-    )
+    return _lookup_empty_panel(query)
 
 
 def _lookup_block(
@@ -2385,8 +2468,8 @@ def _saved_item_summary(line: dict) -> Div:
         if description
         else "",
         guidance_text(
-            "The classification comes from your saved item. Switch the row to "
-            "a one-off line to change it."
+            "Name, description and classification come from your saved item. "
+            "Switch the row to a one-off line if you need to change them."
         ),
         A(
             icon("package", cls="h-3 w-3"),
@@ -2416,12 +2499,13 @@ def _line_modal(
     line = line or {}
     manual = not _is_catalog_line(line)
     is_edit = edit_idx >= 0
-    title = f"Line {edit_idx + 1} details" if is_edit else "New one-off line"
+    title = f"Line {edit_idx + 1} details" if is_edit else "New line"
     subtitle = (
-        "Search your saved items, or attach a classification code for a "
-        "one-off line."
+        "One-off line. Name it, attach a FIRS classification code, then set "
+        "the numbers for this invoice."
         if manual
-        else "Adjust quantity, price and adjustments for this saved item."
+        else "Set the quantity, price and charges for this invoice. The "
+        "saved item itself is not changed."
     )
     submit_label = "Save line" if is_edit else "Add line"
     action = "/invoices/wizard/line/save"
@@ -2533,35 +2617,18 @@ def _step3(
                 cls="text-xs text-slate-500 mt-0.5",
             ),
         ),
-        Div(
-            Button(
-                icon("file-text", cls="h-4 w-4"),
-                Span("New one-off line"),
-                type="button",
-                hx_get="/invoices/wizard/line/new",
-                hx_target="#wizard-modal-area",
-                hx_swap="innerHTML",
-                cls=(
-                    "inline-flex items-center gap-2 px-4 py-2 bg-white "
-                    "border border-slate-300 text-slate-700 text-sm "
-                    "font-medium rounded-lg hover:bg-slate-50 "
-                    "hover:text-indigo-600 hover:border-indigo-300"
-                ),
+        Button(
+            icon("plus", cls="h-4 w-4"),
+            Span("Add row"),
+            type="button",
+            hx_post="/invoices/wizard/step/3/rows/add",
+            hx_target="#line-rows",
+            hx_swap="outerHTML",
+            cls=(
+                "inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 "
+                "text-white text-sm font-medium rounded-lg "
+                "hover:bg-indigo-700 shadow-sm"
             ),
-            Button(
-                icon("plus", cls="h-4 w-4"),
-                Span("Add row"),
-                type="button",
-                hx_post="/invoices/wizard/step/3/rows/add",
-                hx_target="#line-rows",
-                hx_swap="outerHTML",
-                cls=(
-                    "inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 "
-                    "text-white text-sm font-medium rounded-lg "
-                    "hover:bg-indigo-700 shadow-sm"
-                ),
-            ),
-            cls="flex items-center gap-2",
         ),
         cls="flex items-start justify-between gap-3 mb-4",
     )
@@ -2575,9 +2642,12 @@ def _step3(
     return Div(
         _banner(error, success),
         guidance_panel(
-            "Pick a saved item on a row to fill its details, or leave it as a "
-            "one-off line and open the row to enter them. Discounts and fees "
-            "are set per row as a percent, a fixed amount, or none.",
+            "Add one row per thing you are billing. Choose a saved item in "
+            "the row to fill its details, or leave it as a one-off line and "
+            "open it with the eye to type them. Quantity, price, discount "
+            "and additional charge stay editable in the row, and the totals "
+            "update straight away.",
+            title="How this screen works",
             cls="mb-5",
         ),
         header,
@@ -2585,6 +2655,7 @@ def _step3(
         _totals_card(wizard),
         nav,
         Div(id="wizard-modal-area"),
+        cls="flex flex-col",
     )
 
 
@@ -3289,8 +3360,9 @@ def _wizard_layout(
     *,
     username: str | None = None,
     business_id: str | None = None,
+    max_reached: int | None = None,
 ) -> object:
-    max_reached = max(step, 1)
+    max_reached = max(step, max_reached or step, 1)
     return app_shell(
         title,
         _page_header(title, subtitle),
@@ -3366,8 +3438,25 @@ def register_routes(rt) -> None:
         sid = get_session_id(req)
         wizard = _load_wizard(sid)
         current_step = step or wizard.get("_step", 1)
+        try:
+            current_step = int(current_step)
+        except (TypeError, ValueError):
+            current_step = 1
         if current_step < 1 or current_step > 4:
             current_step = 1
+
+        # Keep the stepper honest when the user walks backwards (step 4 to
+        # step 3) and forwards again: the current step is authoritative, the
+        # furthest reached step is remembered separately.
+        try:
+            max_step_reached = int(
+                wizard.get("_max_step") or wizard.get("_step") or 1
+            )
+        except (TypeError, ValueError):
+            max_step_reached = 1
+        max_step_reached = max(1, min(4, max_step_reached), current_step)
+        wizard["_step"] = current_step
+        wizard["_max_step"] = max_step_reached
 
         try:
             me = await api_client.get_me(jwt, session_id=sid)
@@ -3418,6 +3507,7 @@ def register_routes(rt) -> None:
                 body,
                 username=current_username(req),
                 business_id=current_business_id(req),
+                max_reached=max_step_reached,
             )
 
         if current_step == 2:
@@ -3446,6 +3536,7 @@ def register_routes(rt) -> None:
                 body,
                 username=current_username(req),
                 business_id=current_business_id(req),
+                max_reached=max_step_reached,
             )
 
         if current_step == 3:
@@ -3458,12 +3549,13 @@ def register_routes(rt) -> None:
             )
             return _wizard_layout(
                 "Invoice lines",
-                "Add a row per line. Pick a saved item, or enter a one-off "
-                "line, then set quantity, discount and fee.",
+                "Add a row per line, choose a saved item or enter a one-off "
+                "line, then set quantity, price and any adjustments.",
                 3,
                 body,
                 username=current_username(req),
                 business_id=current_business_id(req),
+                max_reached=max_step_reached,
             )
 
         has_secret = False
@@ -3488,6 +3580,7 @@ def register_routes(rt) -> None:
             body,
             username=current_username(req),
             business_id=current_business_id(req),
+            max_reached=max_step_reached,
         )
 
     @rt("/invoices/wizard/step/1", methods=["POST"])
@@ -3791,23 +3884,6 @@ def register_routes(rt) -> None:
             return resp
         return RedirectResponse("/invoices/wizard?step=2", status_code=303)
 
-    @rt("/invoices/wizard/line/new", methods=["GET"])
-    async def new_line_modal(req: Request):
-        redirect = require_session(req)
-        if redirect:
-            return redirect
-        sid = get_session_id(req)
-        jwt = current_jwt(req)
-        wizard = _load_wizard(sid)
-        unit = _default_price_unit(wizard)
-        catalog = await _load_catalog_items(jwt, sid)
-        return _line_modal(
-            edit_idx=-1,
-            line=_empty_row_line(unit),
-            catalog_items=catalog,
-            default_unit=unit,
-        )
-
     @rt("/invoices/wizard/line/catalog", methods=["GET"])
     async def line_catalog_search(req: Request, catalog_q: str = ""):
         redirect = require_session(req)
@@ -3979,6 +4055,12 @@ def register_routes(rt) -> None:
 
     @rt("/invoices/wizard/line/lookup", methods=["GET"])
     async def line_lookup(req: Request, lookup_q: str = ""):
+        """One-off line classification lookup.
+
+        Uses the same shared ranker as the Items page lookup, so a product
+        query such as "rice" ranks HS results first and a service query such
+        as "consulting" ranks ISIC results first.
+        """
         redirect = require_session(req)
         if redirect:
             return redirect
@@ -3987,554 +4069,10 @@ def register_routes(rt) -> None:
             return Div(id="lookup-results")
         jwt = current_jwt(req)
         sid = get_session_id(req)
-
-        import re as _re
-
-        STOPWORDS = {
-            "the",
-            "a",
-            "an",
-            "of",
-            "for",
-            "and",
-            "or",
-            "with",
-            "to",
-            "in",
-            "on",
-            "at",
-            "by",
-            "is",
-            "are",
-            "be",
-            "this",
-            "that",
-        }
-        SYNONYMS: dict[str, list[str]] = {
-            "drug": ["pharmaceutical", "medicament", "medicine"],
-            "drugs": ["pharmaceutical", "medicament", "medicine"],
-            "pharmacy": ["pharmaceutical", "medicament"],
-            "medicine": ["pharmaceutical", "medicament"],
-            "computer": ["data processing", "automatic data", "machines"],
-            "computers": ["data processing", "automatic data"],
-            "laptop": ["portable", "data processing"],
-            "laptops": ["portable", "data processing"],
-            "desktop": ["data processing", "automatic data"],
-            "tablet": ["portable", "data processing"],
-            "printer": ["printing machine", "printing", "ink-jet", "laser"],
-            "printers": ["printing machine", "printing"],
-            "phone": ["telephone", "cellular"],
-            "phones": ["telephone", "cellular"],
-            "smartphone": ["telephone", "cellular"],
-            "mobile": ["cellular", "telephone"],
-            "tv": ["television"],
-            "television": ["television"],
-            "monitor": ["display", "monitor"],
-            "shoe": ["footwear"],
-            "shoes": ["footwear"],
-            "sneaker": ["footwear"],
-            "sneakers": ["footwear"],
-            "boot": ["footwear"],
-            "boots": ["footwear"],
-            "sandal": ["footwear"],
-            "sandals": ["footwear"],
-            "dispenser": ["bottle", "cooler", "container"],
-            "water dispenser": ["water cooler", "evaporative", "cooler"],
-            "consulting": ["consultancy", "management consultancy"],
-            "consultancy": ["management consultancy"],
-            "consult": ["consultancy"],
-            "advisor": ["consultancy", "management consultancy"],
-            "advisory": ["consultancy", "management consultancy"],
-            "accounting": ["bookkeeping", "auditing"],
-            "accountant": ["bookkeeping", "auditing"],
-            "audit": ["auditing"],
-            "tax": ["tax consultancy", "bookkeeping"],
-            "legal": ["legal activities"],
-            "lawyer": ["legal activities"],
-            "law": ["legal activities"],
-            "advertising": ["advertising"],
-            "marketing": ["advertising", "market research"],
-            "branding": ["advertising", "specialized design"],
-            "software": ["computer programming", "software publishing"],
-            "saas": ["computer programming", "software publishing"],
-            "app": ["computer programming", "software publishing"],
-            "programming": ["computer programming"],
-            "developer": ["computer programming"],
-            "development": ["computer programming", "software publishing"],
-            "design": ["specialized design"],
-            "graphic": ["specialized design"],
-            "graphics": ["specialized design"],
-            "training": ["education", "training"],
-            "education": ["education"],
-            "course": ["education"],
-            "courses": ["education"],
-            "tutoring": ["education"],
-            "transport": ["transport", "freight"],
-            "transportation": ["transport", "freight"],
-            "logistics": ["freight", "transport"],
-            "shipping": ["freight", "transport"],
-            "delivery": ["freight", "transport", "courier"],
-            "courier": ["courier", "freight"],
-            "rent": ["rental", "leasing"],
-            "rental": ["rental", "leasing"],
-            "lease": ["rental", "leasing"],
-            "leasing": ["rental", "leasing"],
-            "construction": ["construction"],
-            "building": ["construction"],
-            "cleaning": ["cleaning"],
-            "janitorial": ["cleaning"],
-            "security": ["security"],
-            "guard": ["security"],
-            "food": ["food preparations", "prepared food"],
-            "catering": ["food service", "food preparations"],
-            "restaurant": ["restaurants", "food service"],
-            "hotel": ["accommodation", "hotels"],
-            "lodging": ["accommodation", "hotels"],
-            "rice": ["rice", "cereals", "paddy"],
-            "yam": ["yams", "vegetable roots", "tubers"],
-            "yams": ["yam", "vegetable roots", "tubers"],
-            "cassava": ["manioc", "tubers", "starch"],
-            "manioc": ["cassava", "tubers"],
-            "potato": ["potatoes", "vegetable", "tubers"],
-            "potatoes": ["potato", "vegetable", "tubers"],
-            "cereal": ["cereals", "grain", "wheat", "rice", "maize"],
-            "cereals": ["cereal", "grain", "wheat", "rice", "maize"],
-            "grain": ["cereals", "grains", "wheat", "rice"],
-            "grains": ["cereals", "grains", "wheat", "rice"],
-            "wheat": ["cereals", "wheat", "meslin"],
-            "maize": ["cereals", "maize", "corn"],
-            "corn": ["maize", "cereals"],
-            "millet": ["cereals", "millet"],
-            "sorghum": ["cereals", "sorghum"],
-            "beans": ["leguminous vegetables", "pulses"],
-            "fish": ["fish", "fillets", "fresh"],
-            "meat": ["meat", "edible offal"],
-            "poultry": ["poultry", "meat"],
-            "chicken": ["poultry", "meat"],
-            "egg": ["eggs"],
-            "eggs": ["eggs"],
-            "milk": ["dairy", "milk"],
-            "dairy": ["dairy", "milk"],
-            "vegetable": ["vegetables", "vegetable"],
-            "vegetables": ["vegetables", "vegetable"],
-            "fruit": ["fruit", "fruits", "edible"],
-            "fruits": ["fruit", "fruits", "edible"],
-            "tomato": ["tomatoes", "vegetable"],
-            "onion": ["onions", "vegetable"],
-            "pepper": ["pepper", "spices"],
-            "salt": ["salt", "sodium"],
-            "sugar": ["sugar", "sucrose"],
-            "flour": ["flour", "cereals"],
-            "bread": ["bread", "bakers"],
-            "agricultural": ["agriculture", "agric"],
-            "agriculture": ["agricultural", "agric"],
-            "agric": ["agricultural", "agriculture"],
-            "farming": ["agriculture", "agric"],
-            "livestock": ["live animals", "animal"],
-            "oil": ["oils", "petroleum"],
-            "fuel": ["petroleum", "fuel"],
-            "petrol": ["petroleum", "fuel"],
-            "diesel": ["petroleum", "fuel"],
-            "vehicle": ["motor vehicle", "vehicles"],
-            "car": ["motor vehicle", "vehicles"],
-            "cars": ["motor vehicle", "vehicles"],
-            "tyre": ["tyres", "rubber"],
-            "tire": ["tyres", "rubber"],
-            "tyres": ["tyres", "rubber"],
-            "tires": ["tyres", "rubber"],
-            "book": ["books", "printed"],
-            "books": ["books", "printed"],
-            "paper": ["paper", "stationery"],
-            "stationery": ["paper", "stationery"],
-            "fabric": ["textile", "fabrics"],
-            "textile": ["textile", "fabrics"],
-            "clothing": ["apparel", "garments"],
-            "apparel": ["apparel", "garments"],
-            "garment": ["apparel", "garments"],
-            "repair": ["repair", "maintenance"],
-            "maintenance": ["repair", "maintenance"],
-            "installation": ["installation"],
-            "hosting": ["hosting", "data processing"],
-            "internet": ["telecommunications", "internet"],
-            "telecom": ["telecommunications"],
-            "insurance": ["insurance"],
-            "banking": ["financial", "banking"],
-            "finance": ["financial"],
-            "real estate": ["real estate"],
-            "property": ["real estate"],
-        }
-
-        PRODUCT_HINTS = {
-            "computer",
-            "printer",
-            "phone",
-            "laptop",
-            "tv",
-            "television",
-            "fridge",
-            "refrigerator",
-            "shoe",
-            "shoes",
-            "footwear",
-            "boot",
-            "boots",
-            "dispenser",
-            "cooler",
-            "bottle",
-            "rice",
-            "yam",
-            "yams",
-            "cassava",
-            "manioc",
-            "potato",
-            "potatoes",
-            "cereal",
-            "cereals",
-            "grain",
-            "grains",
-            "wheat",
-            "maize",
-            "corn",
-            "millet",
-            "sorghum",
-            "beans",
-            "fish",
-            "meat",
-            "poultry",
-            "chicken",
-            "egg",
-            "eggs",
-            "milk",
-            "dairy",
-            "vegetable",
-            "vegetables",
-            "fruit",
-            "fruits",
-            "tomato",
-            "onion",
-            "pepper",
-            "salt",
-            "sugar",
-            "flour",
-            "bread",
-            "drug",
-            "drugs",
-            "pharmaceutical",
-            "machine",
-            "device",
-            "equipment",
-            "vehicle",
-            "car",
-            "fuel",
-            "oil",
-            "fabric",
-            "paper",
-            "book",
-            "food",
-            "water",
-        }
-        SERVICE_HINTS = {
-            "consulting",
-            "consultancy",
-            "consult",
-            "accounting",
-            "audit",
-            "auditing",
-            "legal",
-            "lawyer",
-            "advertising",
-            "marketing",
-            "training",
-            "education",
-            "transport",
-            "logistics",
-            "rental",
-            "rent",
-            "leasing",
-            "cleaning",
-            "security",
-            "design",
-            "programming",
-            "development",
-            "service",
-            "services",
-            "maintenance",
-            "repair",
-            "installation",
-            "support",
-            "hosting",
-        }
-
-        lower_q = q.lower()
-        raw_tokens = [
-            t
-            for t in _re.split(r"[^a-z0-9]+", lower_q)
-            if t and t not in STOPWORDS and len(t) >= 2
-        ]
-        product_score = sum(1 for t in raw_tokens if t in PRODUCT_HINTS)
-        service_score = sum(1 for t in raw_tokens if t in SERVICE_HINTS)
-
-        _CODE_HS_RE = _re.compile(r"^\s*(\d{2,4})\.(\d{1,2})\s*$")
-        _CODE_ISIC_RE = _re.compile(r"^\s*(\d{4})\s*$")
-        _hs_match = _CODE_HS_RE.match(q)
-        _isic_match = _CODE_ISIC_RE.match(q)
-        is_code_query = bool(_hs_match or _isic_match)
-
-        if is_code_query and _hs_match:
-            query_bias = "product"
-        elif is_code_query and _isic_match:
-            query_bias = "service"
-        elif product_score > service_score:
-            query_bias = "product"
-        elif service_score > product_score:
-            query_bias = "service"
-        else:
-            query_bias = "neutral"
-
-        search_terms: list[str] = []
-        seen_terms: set[str] = set()
-
-        def _add_term(t: str):
-            t = t.strip()
-            if not t or len(t) < 2:
-                return
-            key = t.lower()
-            if key in seen_terms:
-                return
-            seen_terms.add(key)
-            search_terms.append(t)
-
-        _add_term(q)
-        for tok in raw_tokens:
-            _add_term(tok)
-            for syn in SYNONYMS.get(tok, []):
-                _add_term(syn)
-        if lower_q in SYNONYMS:
-            for syn in SYNONYMS[lower_q]:
-                _add_term(syn)
-        search_terms = search_terms[:6]
-
-        async def _fetch_products(term: str):
-            try:
-                return await api_client.search_products(
-                    jwt, term, length=30, session_id=sid
-                )
-            except Exception:
-                logger.exception("search_products failed for %r", term)
-                return None
-
-        async def _fetch_services(term: str):
-            try:
-                return await api_client.search_services(
-                    jwt, term, length=30, session_id=sid
-                )
-            except Exception:
-                logger.exception("search_services failed for %r", term)
-                return None
-
-        prod_tasks = [_fetch_products(t) for t in search_terms]
-        svc_tasks = [_fetch_services(t) for t in search_terms]
-        prod_results, svc_results = await asyncio.gather(
-            asyncio.gather(*prod_tasks, return_exceptions=True),
-            asyncio.gather(*svc_tasks, return_exceptions=True),
+        hits = await lookup_ranking.search_and_rank_classifications(
+            jwt, q, session_id=sid, limit=20
         )
-
-        merged: dict[tuple[str, str], dict] = {}
-        for res in prod_results:
-            if not res or isinstance(res, Exception):
-                continue
-            for h in res:
-                if not isinstance(h, dict):
-                    continue
-                code = str(h.get("hscode") or h.get("code") or "").strip()
-                if not code:
-                    continue
-                label = str(
-                    h.get("description") or h.get("label") or ""
-                ).strip()
-                cat = str(
-                    h.get("product_category") or h.get("category") or label
-                ).strip()
-                key = ("product", code)
-                if key not in merged:
-                    merged[key] = {
-                        "kind": "product",
-                        "code": code,
-                        "label": label,
-                        "category": cat,
-                    }
-        for res in svc_results:
-            if not res or isinstance(res, Exception):
-                continue
-            for h in res:
-                if not isinstance(h, dict):
-                    continue
-                code = str(h.get("code") or "").strip()
-                if not code:
-                    continue
-                label = str(
-                    h.get("description") or h.get("label") or ""
-                ).strip()
-                cat = str(h.get("category") or label).strip()
-                key = ("service", code)
-                if key not in merged:
-                    merged[key] = {
-                        "kind": "service",
-                        "code": code,
-                        "label": label,
-                        "category": cat,
-                    }
-
-        word_re_cache: dict[str, "_re.Pattern"] = {}
-
-        def _word_re(token: str):
-            if token not in word_re_cache:
-                word_re_cache[token] = _re.compile(
-                    r"\b" + _re.escape(token) + r"\b", _re.IGNORECASE
-                )
-            return word_re_cache[token]
-
-        scored: list[tuple[float, dict]] = []
-        scoring_tokens = list(raw_tokens)
-        scoring_phrases: list[str] = []
-        if " " in lower_q:
-            scoring_phrases.append(lower_q)
-        for tok in raw_tokens:
-            for syn in SYNONYMS.get(tok, []):
-                if " " in syn:
-                    scoring_phrases.append(syn.lower())
-                else:
-                    if syn.lower() not in scoring_tokens:
-                        scoring_tokens.append(syn.lower())
-        if lower_q in SYNONYMS:
-            for syn in SYNONYMS[lower_q]:
-                if " " in syn:
-                    scoring_phrases.append(syn.lower())
-                else:
-                    if syn.lower() not in scoring_tokens:
-                        scoring_tokens.append(syn.lower())
-
-        for hit in merged.values():
-            label_l = (hit.get("label") or "").lower()
-            cat_l = (hit.get("category") or "").lower()
-            code_l = (hit.get("code") or "").lower()
-            text_blob = f"{label_l} || {cat_l}"
-
-            score = 0.0
-
-            if label_l == lower_q or code_l == lower_q:
-                score += 120.0
-            if lower_q and label_l.startswith(lower_q):
-                score += 40.0
-            try:
-                first_segment = label_l.split(";", 1)[0]
-            except Exception:
-                logging.exception("Unexpected error")
-                first_segment = label_l
-            if lower_q and lower_q in first_segment:
-                score += 18.0
-            if " " in lower_q and lower_q in text_blob:
-                score += 25.0
-            if code_l.startswith(lower_q.replace(" ", "")):
-                score += 15.0
-            for phrase in scoring_phrases:
-                if phrase and phrase in text_blob:
-                    score += 12.0
-
-            matched_tokens = 0
-            for tok in scoring_tokens:
-                if not tok:
-                    continue
-                wre = _word_re(tok)
-                if wre.search(label_l):
-                    score += 6.0
-                    matched_tokens += 1
-                elif wre.search(cat_l):
-                    score += 4.0
-                    matched_tokens += 1
-                elif tok in text_blob:
-                    score += 1.5
-                    matched_tokens += 1
-
-            if raw_tokens and matched_tokens == 0 and score < 12.0:
-                continue
-
-            if query_bias == "product" and hit["kind"] == "product":
-                score += 3.0
-            elif query_bias == "service" and hit["kind"] == "service":
-                score += 3.0
-            elif query_bias == "product" and hit["kind"] == "service":
-                score -= 1.5
-            elif query_bias == "service" and hit["kind"] == "product":
-                score -= 1.5
-
-            if score > 0:
-                scored.append((score, hit))
-
-        scored.sort(key=lambda t: (-t[0], (t[1].get("label") or "").lower()))
-        ranked_hits = [h for _, h in scored]
-
-        if not ranked_hits:
-            empty_children = [
-                icon(
-                    "search",
-                    cls="h-8 w-8 text-slate-300 mx-auto mb-2",
-                ),
-                P(
-                    f"No relevant products or services found for “{q}”.",
-                    cls="text-sm font-semibold text-slate-700 text-center",
-                ),
-            ]
-            if is_code_query:
-                empty_children.append(
-                    P(
-                        "That looks like a classification code, but no item "
-                        "matches it on the PASCA gateway. Double-check the "
-                        "format: products use ",
-                        Span("XXXX.XX", cls="font-mono text-indigo-600"),
-                        " (HS), services use ",
-                        Span("XXXX", cls="font-mono text-indigo-600"),
-                        " (ISIC). You can also search by name instead.",
-                        cls="text-xs text-slate-500 text-center mt-2 leading-relaxed px-2",
-                    )
-                )
-            else:
-                empty_children.append(
-                    P(
-                        "Try a broader term, a single keyword, a synonym, or "
-                        "the classification code itself. Products use HS codes "
-                        "like ",
-                        Span("1006.10", cls="font-mono text-indigo-600"),
-                        " and services use ISIC codes like ",
-                        Span("0112", cls="font-mono text-indigo-600"),
-                        ". For example use ",
-                        Span("“footwear”", cls="font-mono text-indigo-600"),
-                        " instead of ",
-                        Span("“sneakers”", cls="font-mono text-slate-500"),
-                        ", or ",
-                        Span("“consultancy”", cls="font-mono text-indigo-600"),
-                        " instead of ",
-                        Span("“consult”", cls="font-mono text-slate-500"),
-                        ".",
-                        cls="text-xs text-slate-500 text-center mt-2 leading-relaxed px-2",
-                    )
-                )
-            return Div(
-                Div(
-                    *empty_children,
-                    cls="px-4 py-6",
-                ),
-                id="lookup-results",
-                cls=(
-                    "mt-2 rounded-lg border border-slate-200 bg-slate-50/60 "
-                    "animate-fade-in-up"
-                ),
-            )
-        return Div(
-            *[_lookup_hit_row(h) for h in ranked_hits[:20]],
-            id="lookup-results",
-            cls="mt-2 max-h-72 overflow-auto rounded-lg border border-slate-200 bg-white shadow-xs animate-fade-in-up",
-        )
+        return _lookup_results_panel(hits, q)
 
     @rt("/invoices/wizard/line/lookup/apply", methods=["GET"])
     async def line_lookup_apply(
@@ -4658,9 +4196,9 @@ def register_routes(rt) -> None:
         elif disc_type == "flat" and disc_value < 0:
             num_err = "Discount amount cannot be negative."
         elif fee_type == "percent" and (fee_value < 0 or fee_value > 100):
-            num_err = "Fee percent must be between 0 and 100."
+            num_err = "Additional charge percent must be between 0 and 100."
         elif fee_type == "flat" and fee_value < 0:
-            num_err = "Fee amount cannot be negative."
+            num_err = "Additional charge cannot be negative."
 
         if disc_type == "percent":
             discount_rate_out, discount_amount_out = disc_value, 0.0
@@ -4707,7 +4245,7 @@ def register_routes(rt) -> None:
             elif line["price_amount"] <= 0:
                 num_err = "Unit price must be greater than zero."
             elif line["base_quantity"] <= 0:
-                num_err = "Base quantity must be greater than zero."
+                num_err = "Units the price covers must be greater than zero."
 
         err = num_err or _validate_line(line)
         line = _normalize_line(line, default_unit)

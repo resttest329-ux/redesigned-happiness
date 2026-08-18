@@ -11,12 +11,12 @@ borders, rounded-lg/xl, indigo accents, flat tables and modals.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import urllib.parse
 
 from fasthtml.common import (
+    A,
     Button,
     Div,
     Form,
@@ -44,11 +44,12 @@ from deps import (
     get_session_id,
     require_session,
 )
-from services import api_client
+from services import api_client, lookup_ranking
 from services.errors import extract_api_error_detail
 from services.unit_codes import (
     DEFAULT_UNIT_CODE,
     coerce_unit_code,
+    sorted_unit_codes,
     unit_code_label,
     unit_code_options,
 )
@@ -57,6 +58,7 @@ from ui.components import (
     empty_state,
     guidance_panel,
     guidance_text,
+    import_rules,
     primary_button,
     table_container,
 )
@@ -93,6 +95,49 @@ _DANGER_BTN = (
     "px-4 py-2 bg-rose-600 text-white text-sm font-medium rounded-lg "
     "hover:bg-rose-700"
 )
+_INDIGO_BTN = (
+    "inline-flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white "
+    "text-sm font-medium rounded-lg hover:bg-indigo-700"
+)
+_INDIGO_GHOST_BTN = (
+    "inline-flex items-center gap-2 px-4 py-2 bg-white border "
+    "border-indigo-300 text-indigo-700 text-sm font-medium rounded-lg "
+    "hover:bg-indigo-50"
+)
+
+#: Columns explained in the import overlay, in upload order.
+IMPORT_RULES: list[tuple[str, str]] = [
+    (
+        "sku",
+        "Optional, but unique in your workspace. A row whose SKU already "
+        "exists updates that item and reactivates it, so imports are safe to "
+        "re-run.",
+    ),
+    ("name", "Required. Printed on the invoice line."),
+    ("description", "Optional extra detail, kept off the invoice line."),
+    (
+        "code",
+        "Required. One classification code only: HS format XXXX.XX for a "
+        "product (for example 1006.10), or exactly 4 digits for a service "
+        "(for example 7020). A row carrying both is skipped.",
+    ),
+    (
+        "unit_price",
+        "Required. A number greater than zero. A priced later item cannot be "
+        "invoiced, so 0 is skipped.",
+    ),
+    (
+        "price_unit",
+        "Official unit code, never free text such as 'NGN per 1'. Accepted: "
+        + ", ".join(sorted_unit_codes())
+        + f". Defaults to {DEFAULT_UNIT_CODE} (each).",
+    ),
+    (
+        "base_quantity",
+        "Optional. Greater than zero, defaults to 1. Only change it if you "
+        "price in multi unit packs.",
+    ),
+]
 
 
 # --------------------------------------------------------------------------
@@ -450,7 +495,42 @@ def _lookup_results(hits: list[dict], query: str) -> Div:
 # --------------------------------------------------------------------------
 
 
-def _item_form_modal(item: dict | None = None, error: str = "") -> Div:
+def _duplicate_item_draft(item: dict) -> dict:
+    """Prefill a new item from an existing one.
+
+    Classification, pricing and unit carry over. The SKU is the identifier
+    imports and the catalog match on, so it is cleared instead of duplicated.
+    """
+    original = str(item.get("name", "") or "").strip()
+    return {
+        "name": f"{original} (copy)" if original else "",
+        "sku": "",
+        "description": str(item.get("description", "") or ""),
+        "hsn_code": str(item.get("hsn_code", "") or ""),
+        "hsn_category": str(item.get("hsn_category", "") or ""),
+        "isic_code": str(item.get("isic_code", "") or ""),
+        "isic_category": str(item.get("isic_category", "") or ""),
+        "unit_price": str(item.get("unit_price", "") or ""),
+        "price_unit": coerce_unit_code(item.get("price_unit")),
+        "base_quantity": str(item.get("base_quantity", "1") or "1"),
+    }
+
+
+def _next_item_draft(payload: dict) -> dict:
+    """Blank item that keeps the classification and unit just used."""
+    return {
+        "hsn_code": str(payload.get("hsn_code") or ""),
+        "hsn_category": str(payload.get("hsn_category") or ""),
+        "isic_code": str(payload.get("isic_code") or ""),
+        "isic_category": str(payload.get("isic_category") or ""),
+        "price_unit": coerce_unit_code(payload.get("price_unit")),
+        "base_quantity": "1",
+    }
+
+
+def _item_form_modal(
+    item: dict | None = None, error: str = "", notice: str = ""
+) -> Div:
     item = item or {}
     item_id = str(item.get("id", "") or "")
     is_edit = bool(item_id)
@@ -458,6 +538,10 @@ def _item_form_modal(item: dict | None = None, error: str = "") -> Div:
     body_children = []
     if error:
         body_children.append(alert("error", error, cls="mb-4"))
+    if notice:
+        body_children.append(
+            guidance_panel(notice, icon_name="copy", cls="mb-4")
+        )
 
     body_children.append(
         Div(
@@ -586,14 +670,24 @@ def _item_form_modal(item: dict | None = None, error: str = "") -> Div:
             _modal_footer(
                 _cancel_button(),
                 Button(
+                    icon("plus", cls="h-4 w-4"),
+                    Span("Save and add another"),
+                    type="submit",
+                    name="_after",
+                    value="new",
+                    title=(
+                        "Save this item and keep a blank form open with the "
+                        "classification and unit carried over"
+                    ),
+                    cls=_INDIGO_GHOST_BTN,
+                ),
+                Button(
                     icon("check-circle", cls="h-4 w-4"),
                     Span("Update item" if is_edit else "Save item"),
                     type="submit",
-                    cls=(
-                        "inline-flex items-center gap-2 px-4 py-2 "
-                        "bg-indigo-600 text-white text-sm font-medium "
-                        "rounded-lg hover:bg-indigo-700"
-                    ),
+                    name="_after",
+                    value="close",
+                    cls=_INDIGO_BTN,
                 ),
             ),
             hx_post="/items/save",
@@ -666,6 +760,21 @@ def _item_row(item: dict) -> Tr:
             cls="inline",
         )
 
+    duplicate_control = Button(
+        icon("copy", cls="h-4 w-4"),
+        type="button",
+        title="Start a new item from this one",
+        aria_label=f"Duplicate item {item.get('name', '')}",
+        onclick="event.stopPropagation();",
+        hx_get=f"/items/{iid}/duplicate-overlay",
+        hx_target=MODAL_AREA,
+        hx_swap="innerHTML",
+        cls=(
+            "p-2 rounded-lg text-slate-400 hover:bg-indigo-50 "
+            "hover:text-indigo-600 transition-colors"
+        ),
+    )
+
     return Tr(
         Td(
             Input(
@@ -734,6 +843,7 @@ def _item_row(item: dict) -> Tr:
         Td(_status_badge(is_active), cls=cell, **edit_attrs),
         Td(
             Div(
+                duplicate_control,
                 toggle_control,
                 Button(
                     icon("trash", cls="h-4 w-4"),
@@ -751,7 +861,7 @@ def _item_row(item: dict) -> Tr:
                 ),
                 cls="flex items-center justify-end gap-1",
             ),
-            cls="px-4 py-2 text-right w-24",
+            cls="px-4 py-2 text-right w-32",
         ),
         cls=(
             "border-b border-slate-100 hover:bg-slate-50/50 transition-colors"
@@ -759,11 +869,36 @@ def _item_row(item: dict) -> Tr:
     )
 
 
-def _item_table(items: list[dict], active: bool) -> Div:
+def _item_table(
+    items: list[dict], active: bool, searching: bool = False
+) -> Div:
     if not items:
+        if searching:
+            # A filtered-out catalog is not an empty catalog, so never
+            # describe it as the user's first record.
+            scope = "active" if active else "inactive"
+            return empty_state(
+                icon_name="search",
+                title="No items match your filters",
+                subtitle=(
+                    f"No {scope} item matches this search or type filter. "
+                    "Try a different keyword or SKU, or clear the filters."
+                ),
+                action_link=A(
+                    icon("x", cls="h-4 w-4"),
+                    Span("Clear filters"),
+                    href=("/items?active=" + ("true" if active else "false")),
+                    cls=(
+                        "mt-4 inline-flex items-center gap-2 px-4 py-2 "
+                        "bg-indigo-600 text-white text-sm font-medium "
+                        "rounded-lg hover:bg-indigo-700"
+                    ),
+                ),
+                id="item-list",
+            )
         return empty_state(
             icon_name="package",
-            title="No items found" if active else "No inactive items",
+            title="No items yet" if active else "No inactive items",
             subtitle=(
                 "Save your first catalog item so invoice lines only need a "
                 "quantity."
@@ -983,10 +1118,11 @@ def _list_container(
     banner=None,
 ) -> Div:
     is_active = active_param != "false"
+    searching = bool((q or "").strip()) or bool((kind or "").strip())
     return Div(
         banner or "",
         _bulk_bar(is_active),
-        _item_table(items, is_active),
+        _item_table(items, is_active, searching),
         _pagination(page, total_pages, q, kind, active_param),
         Script(_ITEMS_JS),
         id="item-list-container",
@@ -1132,66 +1268,10 @@ def _parse_item_form(form) -> tuple[dict, str]:
 
 
 async def _search_classifications(jwt: str, sid: str, q: str) -> list[dict]:
-    async def _prods():
-        try:
-            return await api_client.search_products(
-                jwt, q, length=20, session_id=sid
-            )
-        except Exception:
-            logger.exception("items lookup: search_products failed")
-            return []
-
-    async def _svcs():
-        try:
-            return await api_client.search_services(
-                jwt, q, length=20, session_id=sid
-            )
-        except Exception:
-            logger.exception("items lookup: search_services failed")
-            return []
-
-    prods, svcs = await asyncio.gather(_prods(), _svcs())
-    hits: list[dict] = []
-    for h in prods or []:
-        if not isinstance(h, dict):
-            continue
-        code = str(h.get("hscode") or h.get("code") or "").strip()
-        if not code:
-            continue
-        label = str(h.get("description") or "").strip()
-        hits.append(
-            {
-                "kind": "product",
-                "code": code,
-                "label": label,
-                "category": str(
-                    h.get("product_category") or h.get("category") or label
-                ).strip(),
-            }
-        )
-    for h in svcs or []:
-        if not isinstance(h, dict):
-            continue
-        code = str(h.get("code") or "").strip()
-        if not code:
-            continue
-        label = str(h.get("description") or "").strip()
-        hits.append(
-            {
-                "kind": "service",
-                "code": code,
-                "label": label,
-                "category": str(h.get("category") or label).strip(),
-            }
-        )
-    lower = q.lower()
-    hits.sort(
-        key=lambda h: (
-            0 if (h["label"] or "").lower().startswith(lower) else 1,
-            (h["label"] or "").lower(),
-        )
+    """Shared ranking path, identical to the invoice wizard line lookup."""
+    return await lookup_ranking.search_and_rank_classifications(
+        jwt, q, session_id=sid, limit=20
     )
-    return hits
 
 
 async def _load_page(
@@ -1314,12 +1394,6 @@ def register_routes(rt) -> None:
             "Items",
             header,
             *banners,
-            guidance_panel(
-                "Items are reusable invoice lines. Saving name, SKU, "
-                "classification, unit price and unit code here means the "
-                "invoice wizard only asks for quantity.",
-                cls="mb-5",
-            ),
             _filters(q, kind, active),
             _list_container(items, page, total_pages, q, kind, active),
             Div(id="item-modal-area"),
@@ -1340,7 +1414,7 @@ def register_routes(rt) -> None:
             page = 1
         return q, kind, active, page
 
-    async def _refreshed_list(req: Request, form, banner=None):
+    async def _refreshed_list(req: Request, form, banner=None, modal=None):
         jwt = current_jwt(req)
         sid = get_session_id(req)
         q, kind, active, page = _filter_state(form)
@@ -1356,7 +1430,7 @@ def register_routes(rt) -> None:
             banner = alert("error", load_error)
         return (
             _list_container(items, page, total_pages, q, kind, active, banner),
-            Div(id="item-modal-area", hx_swap_oob="innerHTML"),
+            Div(modal or "", id="item-modal-area", hx_swap_oob="innerHTML"),
         )
 
     # -------------------------------------------------------------- overlays
@@ -1397,6 +1471,40 @@ def register_routes(rt) -> None:
             logger.exception("get_item transport error")
             return HTMLResponse("")
         return _item_form_modal(item)
+
+    @rt("/items/{item_id}/duplicate-overlay", methods=["GET"])
+    async def duplicate_overlay(req: Request, item_id: int):
+        redirect = require_session(req)
+        if redirect:
+            return redirect
+        jwt = current_jwt(req)
+        sid = get_session_id(req)
+        try:
+            item = await api_client.get_item(jwt, item_id, session_id=sid)
+        except api_client.APIError as e:
+            logger.exception("duplicate_overlay get_item failed")
+            return _modal_card(
+                _modal_header("Item unavailable", "Could not load this item."),
+                Div(
+                    alert("error", extract_api_error_detail(e)),
+                    cls="px-6 py-5",
+                ),
+                _modal_footer(_cancel_button("Close")),
+                max_w="max-w-md",
+            )
+        except Exception:
+            logger.exception("duplicate_overlay transport error")
+            return HTMLResponse("")
+        original = str(item.get("name", "") or f"#{item_id}")
+        return _item_form_modal(
+            _duplicate_item_draft(item),
+            notice=(
+                f"Copied from {original}. The classification, price and unit "
+                "carried over. Give it a new SKU: SKUs are unique per "
+                "workspace and are what imports match on. The original item "
+                "is untouched."
+            ),
+        )
 
     # --------------------------------------------------------- classification
     @rt("/items/lookup", methods=["GET"])
@@ -1541,7 +1649,19 @@ def register_routes(rt) -> None:
                 error="Backend service unavailable. Please try again.",
             )
 
-        return await _refreshed_list(req, form, alert("success", msg))
+        modal = None
+        if (form.get("_after") or "").strip() == "new":
+            modal = _item_form_modal(
+                _next_item_draft(payload),
+                notice=(
+                    f"{msg} The classification and unit carried over so you "
+                    "can add a similar item. Name, SKU, description and "
+                    "price are blank."
+                ),
+            )
+        return await _refreshed_list(
+            req, form, alert("success", msg), modal=modal
+        )
 
     # ------------------------------------------------- deactivate / restore
     @rt("/items/{item_id}/deactivate", methods=["POST"])
@@ -1954,6 +2074,7 @@ def register_routes(rt) -> None:
                 title="Expected columns",
                 cls="mb-4",
             ),
+            import_rules(IMPORT_RULES, cls="mb-4"),
             Div(
                 Label(
                     "File",
@@ -1976,12 +2097,11 @@ def register_routes(rt) -> None:
                     ),
                 ),
                 guidance_text(
-                    "Use one classification code per item in the code column: "
-                    "HS format XXXX.XX for a product, or 4 digits for a "
-                    "service. Rows matching an existing SKU are updated. "
-                    "Invalid rows are skipped with a reason and never abort "
-                    "the import. Price units must be official codes such as "
-                    "EA or KGM."
+                    "Rows matching an existing SKU are updated and "
+                    "reactivated. An invalid row is skipped on its own and "
+                    "reported back as 'Row N [SKU or name]: reason' naming "
+                    "the offending column, so the rest of the file still "
+                    "imports. Import up to 2000 rows at a time."
                 ),
                 cls="mb-2",
             ),

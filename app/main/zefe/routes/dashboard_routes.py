@@ -20,7 +20,13 @@ from ui.layout import app_shell
 logger = logging.getLogger(__name__)
 
 
-def _stat_card(label: str, value: str, icon_name: str, accent: str) -> Div:
+def _stat_card(
+    label: str,
+    value: str,
+    icon_name: str,
+    accent: str,
+    hint: str = "",
+) -> Div:
     return Div(
         Div(
             icon(icon_name, cls=f"h-5 w-5 {accent}"),
@@ -31,7 +37,57 @@ def _stat_card(label: str, value: str, icon_name: str, accent: str) -> Div:
             cls="text-xs uppercase text-slate-500 font-semibold tracking-wider",
         ),
         P(value, cls="text-2xl font-bold text-slate-900 mt-1"),
-        cls="bg-white border border-slate-200 rounded-xl p-5 transition-shadow hover:shadow-sm",
+        P(hint, cls="text-[11px] text-slate-500 mt-1.5 leading-relaxed")
+        if hint
+        else "",
+        cls=(
+            "bg-white border border-slate-200 rounded-xl p-5 h-full "
+            "transition-shadow hover:shadow-sm"
+        ),
+    )
+
+
+def _revenue_card(stats_data: dict) -> Div:
+    """Revenue is never converted between currencies.
+
+    ``/invoice-log/stats`` returns a raw ``revenue`` sum plus a
+    ``revenue_by_currency`` breakdown. Because FIRS invoices may be raised in
+    different document currencies, the card shows the largest single-currency
+    total and names the currency explicitly, then lists any other currencies
+    instead of implying one converted figure.
+    """
+    raw = stats_data.get("revenue_by_currency") or {}
+    by_currency: dict[str, float] = {}
+    if isinstance(raw, dict):
+        for code, amount in raw.items():
+            code = str(code or "").strip().upper()
+            if not code:
+                continue
+            try:
+                by_currency[code] = float(amount or 0)
+            except (TypeError, ValueError):
+                logger.exception("dashboard: bad revenue amount for %s", code)
+
+    if not by_currency:
+        by_currency = {"NGN": float(stats_data.get("revenue", 0) or 0)}
+
+    ordered = sorted(by_currency.items(), key=lambda kv: (-kv[1], kv[0]))
+    primary_code, primary_amount = ordered[0]
+    others = ordered[1:]
+
+    if others:
+        hint = "Per currency, never converted: " + ", ".join(
+            f"{code} {amount:,.2f}" for code, amount in others
+        )
+    else:
+        hint = f"Total invoiced in {primary_code}. Amounts are never converted."
+
+    return _stat_card(
+        f"Revenue ({primary_code})",
+        f"{primary_amount:,.2f}",
+        "trending-up",
+        "text-emerald-600",
+        hint=hint,
     )
 
 
@@ -143,12 +199,7 @@ def register_routes(rt) -> None:
                 "receipt",
                 "text-indigo-600",
             ),
-            _stat_card(
-                "Revenue (NGN)",
-                f"{float(stats_data.get('revenue', 0) or 0):.2f}",
-                "trending-up",
-                "text-emerald-600",
-            ),
+            _revenue_card(stats_data),
             _stat_card(
                 "Pending",
                 int(stats_data.get("pending", 0) or 0),

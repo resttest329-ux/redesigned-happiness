@@ -1,5 +1,5 @@
-## Zefe/Zebe Consistency Plan
-- [x] Improve shared UX feedback and wording across Zefe, including reusable click/loading feedback, dashboard item count, invoice PDF item names only, item table alignment, em-dash cleanup, and removal of the stage 4 derived-fields panel while preserving the current slate/indigo compliance-workbench visual direction.
-- [x] Redesign invoice stage 3 around a cleaner inline line-item workflow with catalog selection, editable selected-item details, discount and fee inputs, add/remove rows, and a one-off item path without showing classification lookup after a catalog item is selected.
-- [x] Add customer import, active/inactive filtering, and deactivation/restore behavior consistent with Items, including backend support and pagination-aware frontend flows.
-- [x] Simplify and harden item import code detection and validation, then update smoke checks and create report.md documenting architecture, endpoints, schemas, integrations, payload validation, and system wiring.
+## Zefe/Zebe Follow-up Fix Plan
+- [x] Clarify revenue currency handling and clean customer/item list wording, empty states, helper copy, and persistent loading feedback while preserving the slate/indigo compliance-workbench direction.
+- [x] Improve customer and item creation efficiency with duplicate/save-and-add-new flows and friendlier import guidance for constrained fields like classification code, country, state, units, and TIN.
+- [x] Fix product/service search relevance with one shared lookup ranking path across catalog items and invoice lines, then validate it against a broad 100-query relevance set.
+- [ ] Redesign invoice stage 3 UX for a natural row-first workflow, faster totals updates, cleaner saved-item detail modal, and robust back-and-forth rendering, then validate invoice assembly/sign/transmit behavior against the sandbox.

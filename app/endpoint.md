@@ -129,7 +129,8 @@ Customers are scoped to the business and soft-deleted (`is_active`) so removing 
 - **Purpose**: Computes business revenue statistics.
 - **How Zefe Uses It**: Renders metric charts and key metric badges on the dashboard.
 - **Input**: Bearer token.
-- **Output**: Aggregated figures for total count, revenue sum, paid count, pending count, and rejected count.
+- **Output**: Aggregated figures for total count, revenue sum, paid count, pending count, partial count, rejected count, and a `revenue_by_currency` map.
+- **Currency handling**: No exchange-rate conversion is performed anywhere in the stack. `revenue` is the plain arithmetic sum of `payable_amount` over every logged invoice and is therefore only meaningful for a single-currency workspace. `revenue_by_currency` groups the same totals by each invoice's `document_currency_code` and is the authoritative figure the dashboard renders: it labels the currency explicitly and lists any additional currencies separately rather than presenting one blended number. Note that `tax_currency_code` is always `NGN` for FIRS submission and is unrelated to the document currency used for revenue reporting.
 
 ### `GET /invoice-log`
 - **Purpose**: Queries the audit trail of generated invoices.

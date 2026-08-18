@@ -15,6 +15,7 @@ import logging
 import urllib.parse
 
 from fasthtml.common import (
+    A,
     Button,
     Div,
     Form,
@@ -50,6 +51,7 @@ from ui.components import (
     empty_state,
     guidance_panel,
     guidance_text,
+    import_rules,
     primary_button,
     table_container,
 )
@@ -116,6 +118,35 @@ FIELD_HELP = {
     "email": "Used as the invoice recipient address.",
     "lga": "Optional local government area.",
 }
+
+#: Columns explained in the import overlay, in upload order.
+IMPORT_RULES: list[tuple[str, str]] = [
+    (
+        "tin",
+        "Required. FIRS format NNNNNNNN-NNNN, for example 12345678-0001. "
+        "Rows are matched on this value, so a known TIN updates that "
+        "customer and reactivates it.",
+    ),
+    ("party_name", "Required. The registered company name."),
+    ("email", "Required. A valid address, used as the invoice recipient."),
+    ("telephone", "Required. Include the country code, for example +234."),
+    (
+        "street_name",
+        "Required, with city_name and postal_zone. Blank address fields are "
+        "rejected by FIRS.",
+    ),
+    (
+        "country",
+        "Required. ISO two letter code, for example NG. Not the full country "
+        "name.",
+    ),
+    (
+        "state",
+        "Required. Full state name, for example Lagos. For Nigeria use an "
+        "official state name.",
+    ),
+    ("lga", "Optional. Left blank it is simply omitted."),
+]
 
 
 # --------------------------------------------------------------------------
@@ -259,12 +290,44 @@ def _notice_modal(title: str, subtitle: str, body_text: str) -> Div:
 # --------------------------------------------------------------------------
 
 
+def _duplicate_customer_draft(customer: dict) -> dict:
+    """Prefill a new customer from an existing one.
+
+    Everything reusable is carried over. The TIN is the identifier rows are
+    matched on, so it is cleared rather than duplicated, and the email is
+    cleared because it addresses a specific buyer.
+    """
+    draft = {
+        name: str(customer.get(name, "") or "")
+        for name, _, _, _, _ in CUSTOMER_FIELDS
+    }
+    draft["country"] = str(customer.get("country", "") or "NG")
+    draft["state"] = str(customer.get("state", "") or "")
+    original = str(customer.get("party_name", "") or "").strip()
+    draft["party_name"] = f"{original} (copy)" if original else ""
+    draft["tin"] = ""
+    draft["email"] = ""
+    return draft
+
+
+def _next_customer_draft(payload: dict) -> dict:
+    """Blank customer that keeps the location fields just used."""
+    return {
+        "city_name": str(payload.get("city_name", "") or ""),
+        "postal_zone": str(payload.get("postal_zone", "") or ""),
+        "country": str(payload.get("country", "") or "NG"),
+        "state": str(payload.get("state", "") or ""),
+        "lga": str(payload.get("lga", "") or ""),
+    }
+
+
 def _customer_form_modal(
     customer: dict | None = None,
     *,
     error: str = "",
     countries: list | None = None,
     ng_states: list | None = None,
+    notice: str = "",
 ) -> Div:
     customer = customer or {}
     cid = str(customer.get("id", "") or "")
@@ -273,6 +336,8 @@ def _customer_form_modal(
     body: list = []
     if error:
         body.append(alert("error", error, cls="mb-4"))
+    if notice:
+        body.append(guidance_panel(notice, icon_name="copy", cls="mb-4"))
     body.append(
         guidance_panel(
             "Customer details are copied onto every invoice you raise for "
@@ -317,9 +382,27 @@ def _customer_form_modal(
             _modal_footer(
                 _cancel_button(),
                 Button(
+                    icon("plus", cls="h-4 w-4"),
+                    Span("Save and add another"),
+                    type="submit",
+                    name="_after",
+                    value="new",
+                    title=(
+                        "Save this customer and keep a blank form open with "
+                        "the location fields carried over"
+                    ),
+                    cls=(
+                        "inline-flex items-center gap-2 px-4 py-2 bg-white "
+                        "border border-indigo-300 text-indigo-700 text-sm "
+                        "font-medium rounded-lg hover:bg-indigo-50"
+                    ),
+                ),
+                Button(
                     icon("check-circle", cls="h-4 w-4"),
                     Span("Update customer" if is_edit else "Save customer"),
                     type="submit",
+                    name="_after",
+                    value="close",
                     cls=_INDIGO_BTN,
                 ),
             ),
@@ -390,6 +473,21 @@ def _customer_row(c: dict) -> Tr:
             cls="inline",
         )
 
+    duplicate_control = Button(
+        icon("copy", cls="h-4 w-4"),
+        type="button",
+        title="Start a new customer from this one",
+        aria_label=f"Duplicate customer {name}",
+        onclick="event.stopPropagation();",
+        hx_get=f"/customers/{cid}/duplicate-overlay",
+        hx_target=MODAL_AREA,
+        hx_swap="innerHTML",
+        cls=(
+            "p-2 rounded-lg text-slate-400 hover:bg-indigo-50 "
+            "hover:text-indigo-600 transition-colors"
+        ),
+    )
+
     return Tr(
         Td(
             Input(
@@ -452,6 +550,7 @@ def _customer_row(c: dict) -> Tr:
         Td(_status_badge(is_active), cls=cell, **edit_attrs),
         Td(
             Div(
+                duplicate_control,
                 toggle_control,
                 Button(
                     icon("trash", cls="h-4 w-4"),
@@ -469,17 +568,40 @@ def _customer_row(c: dict) -> Tr:
                 ),
                 cls="flex items-center justify-end gap-1",
             ),
-            cls="px-4 py-2 text-right w-24",
+            cls="px-4 py-2 text-right w-32",
         ),
         cls="border-b border-slate-100 hover:bg-slate-50/50 transition-colors",
     )
 
 
-def _customer_table(customers: list[dict], active: bool) -> Div:
+def _customer_table(
+    customers: list[dict], active: bool, searching: bool = False
+) -> Div:
     if not customers:
+        if searching:
+            # A filtered-out directory is not an empty directory, so never
+            # describe it as the user's first record.
+            scope = "active" if active else "inactive"
+            return empty_state(
+                icon_name="search",
+                title="No customers match your search",
+                subtitle=(
+                    f"No {scope} customer matches this search. Try a "
+                    "different name, TIN, or email, or clear the search."
+                ),
+                action_link=A(
+                    icon("x", cls="h-4 w-4"),
+                    Span("Clear search"),
+                    href=(
+                        "/customers?active=" + ("true" if active else "false")
+                    ),
+                    cls=f"mt-4 {_INDIGO_BTN}",
+                ),
+                id="customer-list",
+            )
         return empty_state(
             icon_name="users",
-            title="No customers found" if active else "No inactive customers",
+            title="No customers yet" if active else "No inactive customers",
             subtitle=(
                 "Add your first customer, or import a spreadsheet to get "
                 "started."
@@ -690,10 +812,11 @@ def _list_container(
     banner=None,
 ) -> Div:
     is_active = active_param != "false"
+    searching = bool((q or "").strip())
     return Div(
         banner or "",
         _bulk_bar(is_active),
-        _customer_table(customers, is_active),
+        _customer_table(customers, is_active, searching),
         _pagination(page, total_pages, q, active_param),
         Script(_CUSTOMERS_JS),
         id="customer-list-container",
@@ -854,8 +977,12 @@ def _parse_ids(raw: str, limit: int = 200) -> list[int]:
 
 
 def register_routes(rt) -> None:
-    async def _refreshed_list(req: Request, form, banner=None):
-        """Pagination-aware list refresh plus an out-of-band modal clear."""
+    async def _refreshed_list(req: Request, form, banner=None, modal=None):
+        """Pagination-aware list refresh plus an out-of-band modal swap.
+
+        ``modal`` is empty for the usual case (close the overlay) and carries
+        a fresh form for the save and add another flow.
+        """
         jwt = current_jwt(req)
         sid = get_session_id(req)
         q, active, page = _filter_state(form)
@@ -871,7 +998,11 @@ def register_routes(rt) -> None:
             banner = alert("error", load_error)
         return (
             _list_container(customers, page, total_pages, q, active, banner),
-            Div(id="customer-modal-area", hx_swap_oob="innerHTML"),
+            Div(
+                modal or "",
+                id="customer-modal-area",
+                hx_swap_oob="innerHTML",
+            ),
         )
 
     # ----------------------------------------------------------------- list
@@ -956,12 +1087,6 @@ def register_routes(rt) -> None:
             "Customers",
             header,
             *banners,
-            guidance_panel(
-                "Customers are reusable on every invoice. Deactivate one to "
-                "hide it from the active directory and from new invoices "
-                "while keeping past invoices intact.",
-                cls="mb-5",
-            ),
             _filters(q, active),
             _list_container(customers, page, total_pages, q, active),
             Div(id="customer-modal-area"),
@@ -1018,6 +1143,38 @@ def register_routes(rt) -> None:
             customer, countries=countries, ng_states=states
         )
 
+    @rt("/customers/{cid}/duplicate-overlay", methods=["GET"])
+    async def duplicate_overlay(req: Request, cid: int):
+        redirect = require_session(req)
+        if redirect:
+            return redirect
+        jwt = current_jwt(req)
+        sid = get_session_id(req)
+        try:
+            customer = await api_client.get_customer(jwt, cid, session_id=sid)
+        except api_client.APIError as e:
+            logger.exception("duplicate_overlay get_customer failed")
+            return _notice_modal(
+                "Customer unavailable",
+                "Could not load this customer.",
+                extract_api_error_detail(e),
+            )
+        except Exception:
+            logger.exception("duplicate_overlay transport error")
+            return HTMLResponse("")
+        countries, states = await _load_lookups(jwt, sid)
+        original = str(customer.get("party_name", "") or f"#{cid}")
+        return _customer_form_modal(
+            _duplicate_customer_draft(customer),
+            countries=countries,
+            ng_states=states,
+            notice=(
+                f"Copied from {original}. Enter the new TIN and email: the "
+                "TIN identifies the customer and is what imports match on, "
+                "so it cannot be reused. The original record is untouched."
+            ),
+        )
+
     # ------------------------------------------------------------------ save
     @rt("/customers/save", methods=["POST"])
     async def save_customer(req: Request):
@@ -1069,7 +1226,23 @@ def register_routes(rt) -> None:
                 "/customers?success=" + urllib.parse.quote_plus(msg),
                 status_code=303,
             )
-        return await _refreshed_list(req, form, alert("success", msg))
+
+        modal = None
+        if (form.get("_after") or "").strip() == "new":
+            countries, states = await _load_lookups(jwt, sid)
+            modal = _customer_form_modal(
+                _next_customer_draft(payload),
+                countries=countries,
+                ng_states=states,
+                notice=(
+                    f"{msg} The location fields carried over so you can add "
+                    "another customer in the same area. Company name, TIN, "
+                    "email, telephone and street are blank."
+                ),
+            )
+        return await _refreshed_list(
+            req, form, alert("success", msg), modal=modal
+        )
 
     # ------------------------------------------------- deactivate / restore
     @rt("/customers/{cid}/deactivate-overlay", methods=["GET"])
@@ -1499,6 +1672,7 @@ def register_routes(rt) -> None:
                 title="Expected columns",
                 cls="mb-4",
             ),
+            import_rules(IMPORT_RULES, cls="mb-4"),
             Div(
                 Label(
                     "File",
@@ -1522,8 +1696,10 @@ def register_routes(rt) -> None:
                 ),
                 guidance_text(
                     "Rows are matched on TIN: a known TIN is updated and "
-                    "reactivated, a new TIN is created. Invalid rows are "
-                    "skipped with a reason and never abort the import."
+                    "reactivated, a new TIN is created. An invalid row is "
+                    "skipped on its own and reported back as "
+                    "'Row N [name or TIN]: reason', so the rest of the file "
+                    "still imports. Import up to 2000 rows at a time."
                 ),
                 cls="mb-2",
             ),

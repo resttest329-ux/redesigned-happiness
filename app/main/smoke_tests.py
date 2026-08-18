@@ -560,6 +560,7 @@ def _run_zebe_unit_and_irn_checks(db, user) -> None:
 
 ZEFE_MODULES = [
     "services/unit_codes.py",
+    "services/lookup_ranking.py",
     "routes/auth_routes.py",
     "routes/customer_routes.py",
     "routes/dashboard_routes.py",
@@ -1484,6 +1485,690 @@ def check_import_column_docs() -> None:
 
 
 # --------------------------------------------------------------------------
+# 10. Shared product / service lookup ranking relevance
+# --------------------------------------------------------------------------
+
+
+def _lookup_product_rows() -> list[dict]:
+    """Representative FIRS HS candidates, in the upstream product shape."""
+    return [
+        {
+            "hscode": "1006.10",
+            "description": "Rice in the husk (paddy or rough)",
+            "product_category": "Cereals",
+        },
+        {
+            "hscode": "1006.30",
+            "description": (
+                "Semi-milled or wholly milled rice, whether or not "
+                "polished or glazed"
+            ),
+            "product_category": "Cereals",
+        },
+        {
+            "hscode": "0714.10",
+            "description": "Manioc (cassava) roots, fresh or dried",
+            "product_category": (
+                "Edible vegetables and certain roots and tubers"
+            ),
+        },
+        {
+            "hscode": "0714.30",
+            "description": "Yams (Dioscorea spp.), fresh or dried",
+            "product_category": (
+                "Edible vegetables and certain roots and tubers"
+            ),
+        },
+        {
+            "hscode": "0701.90",
+            "description": "Potatoes, fresh or chilled, other",
+            "product_category": "Edible vegetables",
+        },
+        {
+            "hscode": "1001.99",
+            "description": "Wheat and meslin, other",
+            "product_category": "Cereals",
+        },
+        {
+            "hscode": "1005.90",
+            "description": "Maize (corn), other",
+            "product_category": "Cereals",
+        },
+        {
+            "hscode": "1008.29",
+            "description": "Millet, other",
+            "product_category": "Cereals",
+        },
+        {
+            "hscode": "1007.90",
+            "description": "Grain sorghum, other",
+            "product_category": "Cereals",
+        },
+        {
+            "hscode": "0713.33",
+            "description": "Kidney beans, dried and shelled",
+            "product_category": "Leguminous vegetables",
+        },
+        {
+            "hscode": "0302.11",
+            "description": "Trout, fresh or chilled fish",
+            "product_category": "Fish and crustaceans",
+        },
+        {
+            "hscode": "0201.30",
+            "description": (
+                "Meat of bovine animals, boneless, fresh or chilled"
+            ),
+            "product_category": "Meat and edible meat offal",
+        },
+        {
+            "hscode": "0207.14",
+            "description": (
+                "Cuts and edible offal of poultry (chicken), frozen"
+            ),
+            "product_category": "Meat and edible meat offal",
+        },
+        {
+            "hscode": "0407.21",
+            "description": (
+                "Eggs of fowls of the species Gallus domesticus, fresh"
+            ),
+            "product_category": "Birds eggs",
+        },
+        {
+            "hscode": "0401.20",
+            "description": "Milk and cream, not concentrated",
+            "product_category": "Dairy produce",
+        },
+        {
+            "hscode": "0702.00",
+            "description": "Tomatoes, fresh or chilled",
+            "product_category": "Edible vegetables",
+        },
+        {
+            "hscode": "0703.10",
+            "description": "Onions and shallots, fresh or chilled",
+            "product_category": "Edible vegetables",
+        },
+        {
+            "hscode": "0904.21",
+            "description": "Pepper of the genus Capsicum, dried",
+            "product_category": "Coffee, tea and spices",
+        },
+        {
+            "hscode": "2501.00",
+            "description": "Salt and pure sodium chloride",
+            "product_category": "Salt and mineral substances",
+        },
+        {
+            "hscode": "1701.99",
+            "description": "Cane or beet sugar, refined",
+            "product_category": "Sugars and sugar confectionery",
+        },
+        {
+            "hscode": "1101.00",
+            "description": "Wheat or meslin flour",
+            "product_category": "Products of the milling industry",
+        },
+        {
+            "hscode": "1905.90",
+            "description": "Bread, pastry, cakes and biscuits, other",
+            "product_category": "Bakers wares",
+        },
+        {
+            "hscode": "3004.90",
+            "description": (
+                "Medicaments for therapeutic or prophylactic uses, other"
+            ),
+            "product_category": "Pharmaceutical products",
+        },
+        {
+            "hscode": "8471.30",
+            "description": (
+                "Portable automatic data processing machines (laptop computers)"
+            ),
+            "product_category": "Machinery and mechanical appliances",
+        },
+        {
+            "hscode": "8471.41",
+            "description": (
+                "Automatic data processing machines, desktop computers"
+            ),
+            "product_category": "Machinery and mechanical appliances",
+        },
+        {
+            "hscode": "8443.32",
+            "description": (
+                "Printing machinery capable of connecting to a computer "
+                "(printers)"
+            ),
+            "product_category": "Machinery and mechanical appliances",
+        },
+        {
+            "hscode": "8517.13",
+            "description": "Smartphones (cellular telephones)",
+            "product_category": "Telephone sets and other apparatus",
+        },
+        {
+            "hscode": "8528.72",
+            "description": "Television reception apparatus, colour",
+            "product_category": "Monitors and projectors",
+        },
+        {
+            "hscode": "8528.52",
+            "description": (
+                "Monitors capable of connecting to a computer display"
+            ),
+            "product_category": "Monitors and projectors",
+        },
+        {
+            "hscode": "8418.10",
+            "description": "Combined refrigerator-freezers",
+            "product_category": "Machinery and mechanical appliances",
+        },
+        {
+            "hscode": "8418.69",
+            "description": (
+                "Water coolers and dispensers, refrigerating equipment"
+            ),
+            "product_category": "Machinery and mechanical appliances",
+        },
+        {
+            "hscode": "6403.99",
+            "description": (
+                "Footwear with outer soles of rubber and uppers of "
+                "leather, other"
+            ),
+            "product_category": "Footwear",
+        },
+        {
+            "hscode": "2710.19",
+            "description": "Gas oils and diesel fuel, petroleum oils",
+            "product_category": "Mineral fuels",
+        },
+        {
+            "hscode": "8703.23",
+            "description": (
+                "Motor cars with spark-ignition engine of 1500 to 3000 cc"
+            ),
+            "product_category": "Vehicles other than railway",
+        },
+        {
+            "hscode": "4011.10",
+            "description": ("New pneumatic tyres of rubber for motor cars"),
+            "product_category": "Rubber and articles thereof",
+        },
+        {
+            "hscode": "4901.99",
+            "description": (
+                "Printed books, brochures and similar printed matter"
+            ),
+            "product_category": "Printed books and newspapers",
+        },
+        {
+            "hscode": "4802.56",
+            "description": "Uncoated paper for writing and printing",
+            "product_category": "Paper and paperboard",
+        },
+        {
+            "hscode": "5208.52",
+            "description": "Woven cotton fabrics, printed",
+            "product_category": "Textile fabrics",
+        },
+        {
+            "hscode": "6203.42",
+            "description": ("Men's or boys' trousers of cotton (apparel)"),
+            "product_category": (
+                "Articles of apparel and clothing accessories"
+            ),
+        },
+        {
+            "hscode": "2201.10",
+            "description": "Mineral waters and aerated waters, bottled",
+            "product_category": "Beverages",
+        },
+    ]
+
+
+def _lookup_service_rows() -> list[dict]:
+    """Representative FIRS ISIC candidates, in the upstream service shape."""
+    return [
+        {
+            "code": "7020",
+            "description": "Management consultancy activities",
+            "category": "Professional, scientific and technical activities",
+        },
+        {
+            "code": "6920",
+            "description": (
+                "Accounting, bookkeeping and auditing activities; "
+                "tax consultancy"
+            ),
+            "category": "Professional, scientific and technical activities",
+        },
+        {
+            "code": "6910",
+            "description": "Legal activities",
+            "category": "Professional, scientific and technical activities",
+        },
+        {
+            "code": "7310",
+            "description": "Advertising activities",
+            "category": "Professional, scientific and technical activities",
+        },
+        {
+            "code": "7320",
+            "description": "Market research and public opinion polling",
+            "category": "Professional, scientific and technical activities",
+        },
+        {
+            "code": "6201",
+            "description": "Computer programming activities",
+            "category": "Information and communication",
+        },
+        {
+            "code": "5820",
+            "description": "Software publishing",
+            "category": "Publishing activities",
+        },
+        {
+            "code": "7410",
+            "description": "Specialized design activities",
+            "category": "Professional, scientific and technical activities",
+        },
+        {
+            "code": "8549",
+            "description": (
+                "Other education and training not elsewhere classified"
+            ),
+            "category": "Education",
+        },
+        {
+            "code": "4923",
+            "description": "Freight transport by road",
+            "category": "Transportation and storage",
+        },
+        {
+            "code": "5320",
+            "description": "Other postal and courier activities",
+            "category": "Transportation and storage",
+        },
+        {
+            "code": "7730",
+            "description": (
+                "Renting and leasing of other machinery and equipment"
+            ),
+            "category": "Administrative and support activities",
+        },
+        {
+            "code": "4100",
+            "description": "Construction of buildings",
+            "category": "Construction",
+        },
+        {
+            "code": "8121",
+            "description": "General cleaning of buildings",
+            "category": "Services to buildings and landscape activities",
+        },
+        {
+            "code": "8010",
+            "description": "Private security activities",
+            "category": "Administrative and support activities",
+        },
+        {
+            "code": "5610",
+            "description": ("Restaurants and mobile food service activities"),
+            "category": "Accommodation and food service activities",
+        },
+        {
+            "code": "5510",
+            "description": ("Short term accommodation activities (hotels)"),
+            "category": "Accommodation and food service activities",
+        },
+        {
+            "code": "6311",
+            "description": ("Data processing, hosting and related activities"),
+            "category": "Information and communication",
+        },
+        {
+            "code": "6110",
+            "description": "Wired telecommunications activities",
+            "category": "Information and communication",
+        },
+        {
+            "code": "6512",
+            "description": "Non-life insurance",
+            "category": "Financial and insurance activities",
+        },
+        {
+            "code": "6419",
+            "description": "Other monetary intermediation (banking)",
+            "category": "Financial and insurance activities",
+        },
+        {
+            "code": "6810",
+            "description": (
+                "Real estate activities with own or leased property"
+            ),
+            "category": "Real estate activities",
+        },
+        {
+            "code": "3312",
+            "description": (
+                "Repair and maintenance of machinery and equipment"
+            ),
+            "category": "Manufacturing",
+        },
+        {
+            "code": "3320",
+            "description": (
+                "Installation of industrial machinery and equipment"
+            ),
+            "category": "Manufacturing",
+        },
+        {
+            # Deliberate cross-kind distractor: a product query for "rice"
+            # must not be won by this manufacturing service.
+            "code": "1061",
+            "description": (
+                "Manufacture of grain mill products, including rice milling"
+            ),
+            "category": "Manufacturing",
+        },
+    ]
+
+
+#: (query, expected top kind or None, code that must appear in the top 3).
+LOOKUP_PRODUCT_CASES: list[tuple[str, str | None, str]] = [
+    ("rice", "product", "1006.10"),
+    ("paddy rice", "product", "1006.10"),
+    ("milled rice", "product", "1006.30"),
+    ("yam", "product", "0714.30"),
+    ("yams", "product", "0714.30"),
+    ("cassava", "product", "0714.10"),
+    ("manioc", "product", "0714.10"),
+    ("potato", "product", "0701.90"),
+    ("potatoes", "product", "0701.90"),
+    ("wheat", "product", "1001.99"),
+    ("maize", "product", "1005.90"),
+    ("corn", "product", "1005.90"),
+    ("millet", "product", "1008.29"),
+    ("sorghum", "product", "1007.90"),
+    ("beans", "product", "0713.33"),
+    ("fish", "product", "0302.11"),
+    ("meat", "product", "0201.30"),
+    ("chicken", "product", "0207.14"),
+    ("poultry", "product", "0207.14"),
+    ("eggs", "product", "0407.21"),
+    ("milk", "product", "0401.20"),
+    ("dairy", "product", "0401.20"),
+    ("tomato", "product", "0702.00"),
+    ("onion", "product", "0703.10"),
+    ("pepper", "product", "0904.21"),
+    ("salt", "product", "2501.00"),
+    ("sugar", "product", "1701.99"),
+    ("flour", "product", "1101.00"),
+    ("bread", "product", "1905.90"),
+    ("drug", "product", "3004.90"),
+    ("drugs", "product", "3004.90"),
+    ("pharmaceutical", "product", "3004.90"),
+    ("medicine", "product", "3004.90"),
+    ("laptop", "product", "8471.30"),
+    ("laptops", "product", "8471.30"),
+    ("computer", "product", "8471.41"),
+    ("computers", "product", "8471.41"),
+    ("desktop", "product", "8471.41"),
+    ("printer", "product", "8443.32"),
+    ("printers", "product", "8443.32"),
+    ("phone", "product", "8517.13"),
+    ("smartphone", "product", "8517.13"),
+    ("mobile phone", "product", "8517.13"),
+    ("television", "product", "8528.72"),
+    ("tv", "product", "8528.72"),
+    ("monitor", "product", "8528.52"),
+    ("fridge", "product", "8418.10"),
+    ("refrigerator", "product", "8418.10"),
+    ("shoes", "product", "6403.99"),
+    ("sneakers", "product", "6403.99"),
+    ("footwear", "product", "6403.99"),
+    ("water dispenser", "product", "8418.69"),
+    ("diesel", "product", "2710.19"),
+    ("petrol", "product", "2710.19"),
+    ("fuel", "product", "2710.19"),
+    ("car", "product", "8703.23"),
+    ("cars", "product", "8703.23"),
+    ("tyres", "product", "4011.10"),
+    ("tires", "product", "4011.10"),
+    ("books", "product", "4901.99"),
+    ("paper", "product", "4802.56"),
+    ("fabric", "product", "5208.52"),
+    ("textile", "product", "5208.52"),
+    ("clothing", "product", "6203.42"),
+    ("apparel", "product", "6203.42"),
+    ("bottled water", "product", "2201.10"),
+]
+
+LOOKUP_SERVICE_CASES: list[tuple[str, str | None, str]] = [
+    ("consulting", "service", "7020"),
+    ("consultancy", "service", "7020"),
+    ("management consultancy", "service", "7020"),
+    ("advisory", "service", "7020"),
+    ("accounting", "service", "6920"),
+    ("accountant", "service", "6920"),
+    ("audit", "service", "6920"),
+    ("auditing", "service", "6920"),
+    ("bookkeeping", "service", "6920"),
+    ("tax", "service", "6920"),
+    ("legal", "service", "6910"),
+    ("lawyer", "service", "6910"),
+    ("law", "service", "6910"),
+    ("advertising", "service", "7310"),
+    ("marketing", "service", "7320"),
+    ("market research", "service", "7320"),
+    ("branding", "service", "7410"),
+    ("software", "service", "5820"),
+    ("programming", "service", "6201"),
+    ("developer", "service", "6201"),
+    ("app development", "service", "6201"),
+    ("design", "service", "7410"),
+    ("graphic design", "service", "7410"),
+    ("training", "service", "8549"),
+    ("education", "service", "8549"),
+    ("course", "service", "8549"),
+    ("transport", "service", "4923"),
+    ("logistics", "service", "4923"),
+    ("shipping", "service", "4923"),
+    ("delivery", "service", "4923"),
+    ("courier", "service", "5320"),
+    ("rental", "service", "7730"),
+    ("leasing", "service", "7730"),
+    ("rent", "service", "7730"),
+    ("construction", "service", "4100"),
+    ("building", "service", "4100"),
+    ("cleaning", "service", "8121"),
+    ("janitorial", "service", "8121"),
+    ("security", "service", "8010"),
+    ("guard", "service", "8010"),
+    ("restaurant", "service", "5610"),
+    ("catering", "service", "5610"),
+    ("hotel", "service", "5510"),
+    ("lodging", "service", "5510"),
+    ("hosting", "service", "6311"),
+    ("internet", "service", "6110"),
+    ("telecom", "service", "6110"),
+    ("insurance", "service", "6512"),
+    ("banking", "service", "6419"),
+    ("real estate", "service", "6810"),
+    ("property", "service", "6810"),
+    ("repair", "service", "3312"),
+    ("maintenance", "service", "3312"),
+    ("installation", "service", "3320"),
+]
+
+LOOKUP_CODE_CASES: list[tuple[str, str | None, str]] = [
+    ("1006.10", "product", "1006.10"),
+    ("8471.30", "product", "8471.30"),
+    ("6403.99", "product", "6403.99"),
+    ("3004.90", "product", "3004.90"),
+    ("8517.13", "product", "8517.13"),
+    ("7020", "service", "7020"),
+    ("6201", "service", "6201"),
+    ("4923", "service", "4923"),
+    ("6920", "service", "6920"),
+    ("8121", "service", "8121"),
+]
+
+LOOKUP_COMPLEX_CASES: list[tuple[str, str | None, str]] = [
+    ("premium rice 50kg bag", "product", "1006.10"),
+    ("management consulting retainer", "service", "7020"),
+    ("laptop computer for office", "product", "8471.30"),
+    ("annual software subscription", "service", "5820"),
+    ("fresh tomatoes and onions", "product", "0703.10"),
+    ("office cleaning services monthly", "service", "8121"),
+    ("cassava tubers export", "product", "0714.10"),
+    ("diesel fuel supply", "product", "2710.19"),
+    ("hotel accommodation booking", "service", "5510"),
+    ("legal activities retainer", "service", "6910"),
+    ("printed books for schools", "product", "4901.99"),
+    ("water dispenser for office", "product", "8418.69"),
+]
+
+
+def check_zefe_lookup_ranking() -> None:
+    """One shared ranker for the item and invoice-line classification lookup.
+
+    The Items page lookup and the wizard one-off line lookup both go through
+    ``services.lookup_ranking``, so this check exercises that single ranker
+    with more than 100 product, service, code, synonym and complex queries
+    against representative HS / ISIC candidates.
+    """
+    print("[zefe] shared lookup ranking relevance\u2026", flush=True)
+    with _SubsystemPath(ZEFE, sibling=ZEBE):
+        from services import lookup_ranking
+
+        _assert_lookup_helpers(lookup_ranking)
+        _assert_lookup_relevance(lookup_ranking)
+        _assert_lookup_surfaces_share_ranker()
+
+
+def _assert_lookup_helpers(lr) -> None:
+    assert lr.detect_code_kind("1006.10") == "product"
+    assert lr.detect_code_kind("7020") == "service"
+    assert lr.detect_code_kind("100610") is None
+    assert lr.detect_code_kind("rice") is None
+    assert lr.is_code_query("0112") and not lr.is_code_query("consulting")
+
+    assert lr.detect_bias("rice") == "product"
+    assert lr.detect_bias("consulting") == "service"
+    assert lr.detect_bias("blue widget") == "neutral"
+
+    terms = [t.lower() for t in lr.expand_search_terms("drugs")]
+    assert "drugs" in terms and "pharmaceutical" in terms, (
+        f"synonym expansion lost the catalog wording: {terms}"
+    )
+    assert len(lr.expand_search_terms("rice", limit=3)) <= 3
+    assert lr.expand_search_terms("") == []
+
+    # Malformed upstream rows are ignored rather than crashing the lookup.
+    assert lr.normalize_product_hits([{"description": "no code"}]) == []
+    assert lr.normalize_service_hits(["not a dict", None]) == []
+
+    # De-duplication is on (kind, code), so a term fan-out cannot repeat a hit.
+    dup_products = _lookup_product_rows()[:1] * 4
+    ranked = lr.rank_lookup_results("rice", dup_products, [])
+    codes = [h["code"] for h in ranked]
+    assert len(codes) == len(set(codes)) == 1, (
+        f"duplicate candidates were not merged: {codes}"
+    )
+    for hit in ranked:
+        assert set(hit) == {"kind", "code", "label", "category"}
+        assert hit["kind"] in ("product", "service")
+
+    assert lr.rank_lookup_results("", _lookup_product_rows(), []) == []
+    print("  \u2713 code detection, bias, expansion and de-duplication OK")
+
+
+def _assert_lookup_relevance(lr) -> None:
+    products = _lookup_product_rows()
+    services = _lookup_service_rows()
+    cases = (
+        LOOKUP_PRODUCT_CASES
+        + LOOKUP_SERVICE_CASES
+        + LOOKUP_CODE_CASES
+        + LOOKUP_COMPLEX_CASES
+    )
+    assert len(cases) >= 100, (
+        f"the relevance set must stay broad (got {len(cases)} queries)"
+    )
+    assert len(LOOKUP_PRODUCT_CASES) >= 40
+    assert len(LOOKUP_SERVICE_CASES) >= 40
+
+    failures: list[str] = []
+    for query, expected_kind, expected_code in cases:
+        hits = lr.rank_lookup_results(query, products, services, limit=10)
+        if not hits:
+            failures.append(f"{query!r}: no results")
+            continue
+        if expected_kind and hits[0]["kind"] != expected_kind:
+            failures.append(
+                f"{query!r}: top hit is {hits[0]['kind']} "
+                f"{hits[0]['code']}, expected a {expected_kind}"
+            )
+        top_codes = [h["code"] for h in hits[:3]]
+        if expected_code not in top_codes:
+            failures.append(
+                f"{query!r}: {expected_code} missing from top 3 {top_codes}"
+            )
+    if failures:
+        raise AssertionError(
+            f"{len(failures)}/{len(cases)} lookup relevance failures:\n  - "
+            + "\n  - ".join(failures[:15])
+        )
+
+    # A product query must not be won by an unrelated service, and the
+    # other way round.
+    rice = lr.rank_lookup_results("rice", products, services, limit=10)
+    assert [h["kind"] for h in rice[:2]] == ["product", "product"], (
+        f"'rice' must rank HS results first: {rice[:3]}"
+    )
+    consulting = lr.rank_lookup_results(
+        "consulting", products, services, limit=10
+    )
+    assert all(h["kind"] == "service" for h in consulting[:3]), (
+        f"'consulting' must rank ISIC results first: {consulting[:3]}"
+    )
+
+    # FIRS constraints are preserved: a hit is a product HS code or a
+    # service ISIC code, never both and never rewritten.
+    for hit in rice + consulting:
+        if hit["kind"] == "product":
+            assert re.match(r"^\d{4}\.\d{2}$", hit["code"]), hit
+        else:
+            assert re.match(r"^\d{4}$", hit["code"]), hit
+
+    print(f"  \u2713 {len(cases)} queries return a high-relevance top result")
+
+
+def _assert_lookup_surfaces_share_ranker() -> None:
+    """Neither surface may re-implement its own ranking."""
+    items = (Path(ZEFE) / "routes" / "item_routes.py").read_text()
+    wizard = (Path(ZEFE) / "routes" / "wizard_routes.py").read_text()
+    for name, text in (("item_routes", items), ("wizard_routes", wizard)):
+        assert "lookup_ranking" in text, (
+            f"{name} must use the shared lookup ranker"
+        )
+        assert "search_and_rank_classifications(" in text, (
+            f"{name} must search through the shared ranker"
+        )
+        for stale in ("SYNONYMS", "PRODUCT_HINTS", "SERVICE_HINTS"):
+            assert stale not in text, (
+                f"{name} still carries its own {stale} table; the ranking "
+                "tables belong to services/lookup_ranking.py only"
+            )
+    print("  \u2713 items page and invoice wizard share one ranking path")
+
+
+# --------------------------------------------------------------------------
 # Entry point
 # --------------------------------------------------------------------------
 
@@ -1545,6 +2230,7 @@ def main() -> int:
         check_zefe_derived_fields_readonly,
         check_zefe_customer_directory_wiring,
         check_zefe_stage3_ux,
+        check_zefe_lookup_ranking,
         check_zefe_pdf_item_name_only,
         check_no_em_dashes,
         check_import_column_docs,

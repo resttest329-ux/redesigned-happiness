@@ -18,6 +18,17 @@ def get_invoice_log_stats(
     token: Annotated[str, Depends(oauth2_scheme)],
     db: Session = Depends(get_db),
 ):
+    """Workspace invoice counters plus revenue totals.
+
+    Currency handling is deliberately literal: no exchange rate is ever
+    applied. ``revenue`` is the plain sum of ``payable_amount`` across every
+    logged invoice, so it is only meaningful when the workspace invoices in a
+    single currency. ``revenue_by_currency`` groups the same amounts by each
+    invoice's ``currency`` (the document currency) and is what the dashboard
+    renders, so a mixed-currency workspace never sees one blended figure.
+    Note that the FIRS ``tax_currency_code`` is always NGN and is unrelated to
+    these document-currency totals.
+    """
     user = get_current_user_obj(token, db)
     row = (
         db.query(

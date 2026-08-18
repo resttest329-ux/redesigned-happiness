@@ -215,6 +215,46 @@ def guidance_panel(
     )
 
 
+def import_rules(
+    rows: list[tuple[str, str]],
+    title: str = "Column rules",
+    cls: str = "",
+) -> Div:
+    """Compact reference for the constrained columns of a bulk import.
+
+    ``rows`` is a list of ``(column, rule)`` pairs. Shared by the customer and
+    item import overlays so both explain their rules the same way.
+    """
+    items = []
+    for column, rule in rows:
+        items.append(
+            Div(
+                Span(
+                    column,
+                    cls=(
+                        "inline-flex items-center px-1.5 py-0.5 rounded "
+                        "text-[11px] font-mono font-semibold bg-indigo-50 "
+                        "text-indigo-700 border border-indigo-200 w-fit "
+                        "shrink-0"
+                    ),
+                ),
+                P(rule, cls="text-[11px] text-slate-600 leading-relaxed"),
+                cls="flex items-start gap-2 min-w-0",
+            )
+        )
+    return Div(
+        P(
+            title,
+            cls=(
+                "text-[11px] font-bold uppercase tracking-wider "
+                "text-slate-500 mb-2"
+            ),
+        ),
+        Div(*items, cls="flex flex-col gap-2"),
+        cls=("p-4 bg-white rounded-xl border border-slate-200 " + cls).strip(),
+    )
+
+
 def normalize_country_options(raw) -> list[tuple[str, str]]:
     if not raw:
         return []

@@ -33,56 +33,139 @@ _NAV_ITEMS = [
 ]
 
 
+#: Loading feedback is intentionally conservative: it is raised only by a real
+#: htmx request or a real navigation/submit, it is never raised twice for the
+#: same request, and it always clears itself (request settle, page show,
+#: tab hide, or a hard safety timeout) so the pill can never spin forever.
 _ACTIVITY_JS = """
 (function(){
-  var depth = 0;
+  var NAV_DELAY_MS = 150;
+  var SAFETY_MS = 8000;
+  var inflight = [];
+  var orphans = 0;
+  var navActive = false;
+  var navTimer = null;
+  var safetyTimer = null;
+
   function bar(){ return document.getElementById('zefe-progress'); }
   function pill(){ return document.getElementById('zefe-activity'); }
-  function paint(on){
+  function busy(){ return inflight.length > 0 || orphans > 0 || navActive; }
+
+  function apply(on){
     var b = bar(), p = pill();
     if (b) { if (on) { b.classList.add('is-active'); } else { b.classList.remove('is-active'); } }
-    if (p) { if (on) { p.classList.add('is-active'); } else { p.classList.remove('is-active'); } }
+    if (p) {
+      if (on) { p.classList.add('is-active'); p.removeAttribute('aria-hidden'); }
+      else { p.classList.remove('is-active'); p.setAttribute('aria-hidden', 'true'); }
+    }
   }
-  function show(){ depth = depth + 1; paint(true); }
-  function hide(force){
-    depth = force ? 0 : Math.max(0, depth - 1);
-    if (depth === 0) { paint(false); }
+
+  function paint(){
+    var on = busy();
+    apply(on);
+    if (on) {
+      if (!safetyTimer) {
+        safetyTimer = setTimeout(function(){ reset(); }, SAFETY_MS);
+      }
+    } else if (safetyTimer) {
+      clearTimeout(safetyTimer);
+      safetyTimer = null;
+    }
   }
+
+  function reset(){
+    inflight = [];
+    orphans = 0;
+    navActive = false;
+    if (navTimer) { clearTimeout(navTimer); navTimer = null; }
+    if (safetyTimer) { clearTimeout(safetyTimer); safetyTimer = null; }
+    apply(false);
+  }
+
+  function track(evt, on){
+    var xhr = evt && evt.detail ? evt.detail.xhr : null;
+    if (xhr) {
+      var at = inflight.indexOf(xhr);
+      if (on) { if (at === -1) { inflight.push(xhr); } }
+      else if (at !== -1) { inflight.splice(at, 1); }
+    } else if (on) {
+      orphans = orphans + 1;
+    } else {
+      orphans = Math.max(0, orphans - 1);
+    }
+    paint();
+  }
+
+  function startNav(){
+    if (navActive || navTimer) return;
+    navTimer = setTimeout(function(){
+      navTimer = null;
+      navActive = true;
+      paint();
+    }, NAV_DELAY_MS);
+  }
+
   function press(el){
     if (!el || !el.classList) return;
     el.classList.add('zefe-pressed');
     setTimeout(function(){ el.classList.remove('zefe-pressed'); }, 200);
   }
+
   function isHtmx(el){
-    if (!el || !el.getAttribute) return false;
+    if (!el || !el.hasAttribute) return false;
     return ['hx-get','hx-post','hx-put','hx-patch','hx-delete'].some(function(a){
       return el.hasAttribute(a);
     });
   }
-  document.body.addEventListener('htmx:beforeRequest', function(){ show(); });
-  document.body.addEventListener('htmx:afterRequest', function(){ hide(false); });
-  document.body.addEventListener('htmx:responseError', function(){ hide(true); });
-  document.body.addEventListener('htmx:sendError', function(){ hide(true); });
-  document.body.addEventListener('htmx:timeout', function(){ hide(true); });
+
+  function navigates(el, e){
+    if (el.tagName !== 'A') return false;
+    if (e.defaultPrevented) return false;
+    if (e.button && e.button !== 0) return false;
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return false;
+    if (el.hasAttribute('download')) return false;
+    var target = el.getAttribute('target');
+    if (target && target !== '_self') return false;
+    var href = el.getAttribute('href') || '';
+    if (!href || href.charAt(0) === '#') return false;
+    if (href.indexOf('javascript:') === 0) return false;
+    if (href.indexOf('mailto:') === 0 || href.indexOf('tel:') === 0) return false;
+    return true;
+  }
+
+  ['htmx:beforeRequest'].forEach(function(name){
+    document.body.addEventListener(name, function(e){ track(e, true); });
+  });
+  ['htmx:afterRequest','htmx:responseError','htmx:sendError','htmx:timeout',
+   'htmx:abort','htmx:afterOnLoad','htmx:afterSettle',
+   'htmx:afterSwap'].forEach(function(name){
+    document.body.addEventListener(name, function(e){ track(e, false); });
+  });
+
   document.addEventListener('click', function(e){
-    var el = e.target && e.target.closest ? e.target.closest('a[href], button') : null;
-    if (!el || el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return;
+    var el = e.target && e.target.closest
+      ? e.target.closest('a[href], button, [role=\"button\"]')
+      : null;
+    if (!el) return;
+    if (el.hasAttribute('disabled') || el.getAttribute('aria-disabled') === 'true') return;
     press(el);
     if (isHtmx(el)) return;
-    if (el.tagName === 'A') {
-      var href = el.getAttribute('href') || '';
-      if (!href || href.charAt(0) === '#' || el.target === '_blank') return;
-      if (href.indexOf('javascript:') === 0 || href.indexOf('mailto:') === 0) return;
-      show();
-    }
+    if (navigates(el, e)) startNav();
   }, true);
+
   document.addEventListener('submit', function(e){
     var f = e.target;
-    if (!f || isHtmx(f)) return;
-    show();
+    if (!f || isHtmx(f) || e.defaultPrevented) return;
+    startNav();
   }, true);
-  window.addEventListener('pageshow', function(){ hide(true); });
-  window.addEventListener('load', function(){ hide(true); });
+
+  document.addEventListener('visibilitychange', function(){
+    if (document.hidden) reset();
+  });
+  window.addEventListener('popstate', function(){ reset(); });
+  window.addEventListener('pageshow', function(){ reset(); });
+  window.addEventListener('load', function(){ reset(); });
+  reset();
 })();
 """
 
@@ -110,6 +193,7 @@ def activity_feedback() -> tuple:
             cls="zefe-activity",
             role="status",
             aria_live="polite",
+            aria_hidden="true",
         ),
         Script(_ACTIVITY_JS),
     )
