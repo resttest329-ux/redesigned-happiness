@@ -37,6 +37,10 @@ _NAV_ITEMS = [
 #: htmx request or a real navigation/submit, it is never raised twice for the
 #: same request, and it always clears itself (request settle, page show,
 #: tab hide, or a hard safety timeout) so the pill can never spin forever.
+#:
+#: Visibility is driven by inline display + the hidden attribute as well as the
+#: `is-active` class, so a late/failed stylesheet or a slow script can never
+#: leave a "Working..." pill parked in the corner of an idle page.
 _ACTIVITY_JS = """
 (function(){
   var NAV_DELAY_MS = 150;
@@ -46,18 +50,33 @@ _ACTIVITY_JS = """
   var navActive = false;
   var navTimer = null;
   var safetyTimer = null;
+  var shown = null;
 
   function bar(){ return document.getElementById('zefe-progress'); }
   function pill(){ return document.getElementById('zefe-activity'); }
   function busy(){ return inflight.length > 0 || orphans > 0 || navActive; }
 
   function apply(on){
+    on = !!on;
     var b = bar(), p = pill();
-    if (b) { if (on) { b.classList.add('is-active'); } else { b.classList.remove('is-active'); } }
-    if (p) {
-      if (on) { p.classList.add('is-active'); p.removeAttribute('aria-hidden'); }
-      else { p.classList.remove('is-active'); p.setAttribute('aria-hidden', 'true'); }
+    if (b) {
+      if (on) { b.classList.add('is-active'); b.hidden = false; b.style.display = 'block'; }
+      else { b.classList.remove('is-active'); b.hidden = true; b.style.display = 'none'; }
     }
+    if (p) {
+      if (on) {
+        p.classList.add('is-active');
+        p.hidden = false;
+        p.style.display = 'flex';
+        p.setAttribute('aria-hidden', 'false');
+      } else {
+        p.classList.remove('is-active');
+        p.hidden = true;
+        p.style.display = 'none';
+        p.setAttribute('aria-hidden', 'true');
+      }
+    }
+    shown = on;
   }
 
   function paint(){
@@ -161,10 +180,16 @@ _ACTIVITY_JS = """
 
   document.addEventListener('visibilitychange', function(){
     if (document.hidden) reset();
+    else if (!busy() && shown !== false) reset();
   });
   window.addEventListener('popstate', function(){ reset(); });
   window.addEventListener('pageshow', function(){ reset(); });
+  window.addEventListener('pagehide', function(){ reset(); });
   window.addEventListener('load', function(){ reset(); });
+  document.addEventListener('DOMContentLoaded', function(){ reset(); });
+  document.body.addEventListener('htmx:load', function(){
+    if (!busy()) reset();
+  });
   reset();
 })();
 """
@@ -181,7 +206,10 @@ def activity_feedback() -> tuple:
             Div(cls="zefe-progress-bar"),
             id="zefe-progress",
             cls="zefe-progress",
+            role="presentation",
             aria_hidden="true",
+            hidden=True,
+            style="display:none;",
         ),
         Div(
             icon("loader", cls="h-4 w-4 text-indigo-600 animate-spin"),
@@ -194,6 +222,8 @@ def activity_feedback() -> tuple:
             role="status",
             aria_live="polite",
             aria_hidden="true",
+            hidden=True,
+            style="display:none;",
         ),
         Script(_ACTIVITY_JS),
     )

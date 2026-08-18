@@ -63,6 +63,9 @@ h1, h2, h3, h4, h5, h6 {
 /* looks like it did nothing.                                          */
 /* ------------------------------------------------------------------ */
 
+/* Hidden by default, and hidden even if this stylesheet loads late or not at
+   all: the markup also ships with an inline display:none and the hidden
+   attribute, so the indicators can never flash on an idle page load. */
 .zefe-progress {
   position: fixed;
   top: 0;
@@ -73,10 +76,19 @@ h1, h2, h3, h4, h5, h6 {
   overflow: hidden;
   pointer-events: none;
   opacity: 0;
+  visibility: hidden;
   transition: opacity 120ms ease;
 }
+.zefe-progress:not(.is-active) {
+  display: none !important;
+}
+.zefe-progress[hidden] {
+  display: none !important;
+}
 .zefe-progress.is-active {
+  display: block;
   opacity: 1;
+  visibility: visible;
 }
 .zefe-progress-bar {
   height: 100%;
@@ -98,7 +110,7 @@ h1, h2, h3, h4, h5, h6 {
   bottom: 1.25rem;
   right: 1.25rem;
   z-index: 9999;
-  display: flex;
+  display: none;
   align-items: center;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
@@ -106,13 +118,29 @@ h1, h2, h3, h4, h5, h6 {
   border: 1px solid #e2e8f0;
   border-radius: 0.75rem;
   opacity: 0;
+  visibility: hidden;
   transform: translateY(4px);
   pointer-events: none;
   transition: opacity 140ms ease, transform 140ms ease;
 }
+/* Belt and braces: an inactive pill collapses entirely, so neither the
+   spinner nor the "Working..." label can linger in the corner. */
+.zefe-activity:not(.is-active),
+.zefe-activity[hidden],
+.zefe-activity[aria-hidden="true"] {
+  display: none !important;
+}
+.zefe-activity:not(.is-active) > * {
+  display: none !important;
+}
 .zefe-activity.is-active {
+  display: flex !important;
   opacity: 1;
+  visibility: visible;
   transform: translateY(0);
+}
+.zefe-activity.is-active > * {
+  display: initial;
 }
 
 .zefe-pressed {
