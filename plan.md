@@ -2,4 +2,4 @@
 - [x] Clarify revenue currency handling and clean customer/item list wording, empty states, helper copy, and persistent loading feedback while preserving the slate/indigo compliance-workbench direction.
 - [x] Improve customer and item creation efficiency with duplicate/save-and-add-new flows and friendlier import guidance for constrained fields like classification code, country, state, units, and TIN.
 - [x] Fix product/service search relevance with one shared lookup ranking path across catalog items and invoice lines, then validate it against a broad 100-query relevance set.
-- [ ] Redesign invoice stage 3 UX for a natural row-first workflow, faster totals updates, cleaner saved-item detail modal, and robust back-and-forth rendering, then validate invoice assembly/sign/transmit behavior against the sandbox.
+- [x] Redesign invoice stage 3 UX for a natural row-first workflow, faster totals updates, cleaner saved-item detail modal, and robust back-and-forth rendering, then validate invoice assembly/sign/transmit behavior against the sandbox.
